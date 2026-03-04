@@ -400,6 +400,7 @@ let officeRooms   = [...DEFAULT_OFFICES];
 let currentFilter = 'all';
 let currentDate   = null;
 let uploadCount   = { approved: 0, pending: 0 };
+let dismissedRemoved = new Set(); // student|date keys dismissed by user
 
 // ══════════════════════════════════════════════════
 // INIT
@@ -580,7 +581,8 @@ function saveToLocalStorage() {
   try {
     const payload = {
       savedAt: new Date().toISOString(),
-      records: allRecords.filter(r => !r.removed) // only save active records as baseline
+      records: allRecords.filter(r => !r.removed),
+      dismissed: [...dismissedRemoved]
     };
     localStorage.setItem(LS_KEY, JSON.stringify(payload));
   } catch(e) { console.warn('localStorage save failed:', e); }
@@ -594,10 +596,26 @@ function loadFromLocalStorage() {
   } catch(e) { return null; }
 }
 
+function dismissRemoved(key) {
+  dismissedRemoved.add(key);
+  // Persist dismissals to localStorage
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    const payload = raw ? JSON.parse(raw) : {};
+    payload.dismissed = [...dismissedRemoved];
+    localStorage.setItem(LS_KEY, JSON.stringify(payload));
+  } catch(e) {}
+  // Remove the record entirely from allRecords
+  allRecords = allRecords.filter(r => !(r.removed && (r.student + '|' + r.date) === key));
+  updateStats();
+  renderGrid();
+}
+
 function clearHistory() {
   if (!confirm('Clear saved session history? This will reset the "Not in Latest Upload" baseline.')) return;
   try { localStorage.removeItem(LS_KEY); } catch(e) {}
   allRecords = [];
+  dismissedRemoved = new Set();
   uploadCount = { approved: 0, pending: 0 };
   const notice = document.getElementById('sessionNotice');
   if (notice) notice.style.display = 'none';
@@ -617,6 +635,7 @@ function restoreSessionBaseline() {
   if (daysDiff > 14) return;
 
   allRecords = saved.records.map(r => ({ ...r, removed: false, conflict: false, conflictWith: [] }));
+  dismissedRemoved = new Set(saved.dismissed || []);
 
   // Show a subtle restore notice
   const notice = document.getElementById('sessionNotice');
@@ -933,7 +952,10 @@ function renderGrid() {
           const courseShort = (student.course||'').split('(')[0].trim().substring(0, 38);
           const badges = [];
           if (student.conflict) badges.push('<span class="sb-badge conflict">⚠ CONFLICT</span>');
-          if (student.removed)  badges.push('<span class="sb-badge removed">⚠ NOT IN LATEST</span>');
+          if (student.removed) {
+            const dk = escH(student.student + '|' + student.date);
+            badges.push(`<span class="sb-badge removed" style="display:flex;align-items:center;gap:3px">⚠ NOT IN LATEST <span onclick="event.stopPropagation();dismissRemoved('${dk}')" style="cursor:pointer;font-weight:900;font-size:11px;margin-left:2px" title="Dismiss">✕</span></span>`);
+          }
           const tipId = storeTip({
             name: student.student, course: student.course, accom: student.accom,
             exam: student.exam, start: student.startRaw, end: student.endRaw,
@@ -973,7 +995,10 @@ function renderGrid() {
           const courseShort = (student.course||'').split('(')[0].trim().substring(0, 38);
           const badges = [];
           if (student.conflict) badges.push('<span class="sb-badge conflict">⚠ CONFLICT</span>');
-          if (student.removed)  badges.push('<span class="sb-badge removed">⚠ NOT IN LATEST</span>');
+          if (student.removed) {
+            const dk = escH(student.student + '|' + student.date);
+            badges.push(`<span class="sb-badge removed" style="display:flex;align-items:center;gap:3px">⚠ NOT IN LATEST <span onclick="event.stopPropagation();dismissRemoved('${dk}')" style="cursor:pointer;font-weight:900;font-size:11px;margin-left:2px" title="Dismiss">✕</span></span>`);
+          }
           const tipId = storeTip({
             name: student.student, course: student.course, accom: student.accom,
             exam: student.exam, start: student.startRaw, end: student.endRaw,
