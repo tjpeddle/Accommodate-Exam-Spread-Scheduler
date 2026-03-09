@@ -554,14 +554,16 @@ function processRows(rows, fileType) {
     // If room matches a known office room number, treat as office assignment (no slot column)
     const matchedOffice = officeRooms.find(o =>
       o.room.trim().toLowerCase() === room.trim().toLowerCase() ||
-      o.room.trim() === room.trim()
+      o.room.trim() === room.trim() ||
+      o.room.trim() === slot.trim()   // slot value is a room number e.g. "402"
     );
     // Office assignment: matched an office room, OR has no slot and room looks like a room number (not a named testing room)
     const isOfficeAssignment = !!matchedOffice || (!slot && room && floor === 'other' && /^\d+/.test(room.trim()));
+    const resolvedRoom = matchedOffice ? matchedOffice.room : room;
 
     return {
-      student, room, slot: isOfficeAssignment ? '' : slot, slotNum, floor: matchedOffice ? matchedOffice.floor : floor,
-      isOfficeAssignment, officeRoom: isOfficeAssignment ? room : null,
+      student, room: resolvedRoom, slot: isOfficeAssignment ? '' : slot, slotNum, floor: matchedOffice ? matchedOffice.floor : floor,
+      isOfficeAssignment, officeRoom: isOfficeAssignment ? resolvedRoom : null,
       date: dateStr, startMin, endMin, durMin, startRaw, endRaw,
       course, accom, exam,
       fileType,
@@ -1147,9 +1149,17 @@ function searchStudent(query) {
     !r.removed && r.student && r.student.toLowerCase().includes(q)
   );
 
-  // Deduplicate by student name — show each student once with all their dates
+  // Deduplicate by student+date+slot (prevent localStorage baseline doubles)
+  const seen = new Set();
+  const deduped = matches.filter(r => {
+    const key = r.student + '|' + r.date + '|' + (r.slot||'none') + '|' + (r.course||'');
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+
+  // Group by student name
   const byStudent = {};
-  matches.forEach(r => {
+  deduped.forEach(r => {
     if (!byStudent[r.student]) byStudent[r.student] = [];
     byStudent[r.student].push(r);
   });
@@ -1160,8 +1170,11 @@ function searchStudent(query) {
   }
 
   resultsEl.innerHTML = Object.entries(byStudent).map(([name, recs]) => {
-    const dates = recs.map(r => {
+    const dates = recs.sort((a,b) => new Date(a.date)-new Date(b.date)).map(r => {
       const d = new Date(r.date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+      if (!r.slot && !r.isOfficeAssignment) {
+        return `<span style="color:#b85c00">${d} · ⚠ no slot assigned</span>`;
+      }
       return `${d} · ${r.startRaw}–${r.endRaw}`;
     }).join('<br>');
     return `<div class="search-result" onclick="jumpToStudent('${escH(name)}')">
@@ -1180,8 +1193,10 @@ function jumpToStudent(name) {
   const studentRecs = allRecords.filter(r => !r.removed && r.student === name);
   if (!studentRecs.length) return;
 
-  // Navigate to their first date
-  const firstDate = studentRecs.sort((a,b) => new Date(a.date)-new Date(b.date))[0].date;
+  // Navigate to their first slotted date
+  const slottedRecs = studentRecs.filter(r => r.slot || r.isOfficeAssignment);
+  if (!slottedRecs.length) return; // all unassigned, nothing to jump to
+  const firstDate = slottedRecs.sort((a,b) => new Date(a.date)-new Date(b.date))[0].date;
   if (currentDate !== firstDate) {
     currentDate = firstDate;
     updateDateTabs();
