@@ -667,11 +667,11 @@ function renderNeedsTypeSidebar() {
 
   list.innerHTML = unset.map(r => {
     const d = new Date(r.date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
-    const ek = escH(etKey(r));
-    const dn = escH(r.date);
-    const nn = escH(r.student);
+    const ek = escJS(etKey(r));
+    const dn = escJS(r.date);
+    const nn = escJS(r.student);
     return `<div class="needs-type-row">
-      <span class="needs-type-link" onclick="jumpToStudentDate('${nn}','${dn}')" title="${nn} — ${d}">${escH(r.student)}</span>
+      <span class="needs-type-link" onclick="jumpToStudentDate('${nn}','${dn}')" title="${escH(r.student)} — ${d}">${escH(r.student)}</span>
       <span class="needs-type-date">${d}</span>
     </div>`;
   }).join('');
@@ -1050,7 +1050,7 @@ function renderGrid() {
           const badges = [];
           if (student.conflict) badges.push('<span class="sb-badge conflict">⚠ CONFLICT</span>');
           if (student.removed) {
-            const dk = escH(student.student + '|' + student.date);
+            const dk = escJS(student.student + '|' + student.date);
             badges.push(`<span class="sb-badge removed" style="display:flex;align-items:center;gap:3px">⚠ NOT IN LATEST <span onclick="event.stopPropagation();dismissRemoved('${dk}')" style="cursor:pointer;font-weight:900;font-size:11px;margin-left:2px" title="Dismiss">✕</span></span>`);
           }
           const tipId = storeTip({
@@ -1062,9 +1062,10 @@ function renderGrid() {
           });
           const ek = etKey(student);
           const et = examTypes[ek] || '';
+          const ekJS = escJS(ek);
           const etHtml = !student.removed ? `<div style="display:flex;gap:4px;margin-top:3px;flex-wrap:wrap">
-            <span class="et-btn ${et==='paper'?'et-paper':'et-unset'}" onclick="event.stopPropagation();setExamType('${escH(ek)}','paper')"><span class="et-dot ${et==='paper'?'paper':'unset'}"></span>PAPER</span>
-            <span class="et-btn ${et==='online'?'et-online':'et-unset'}" onclick="event.stopPropagation();setExamType('${escH(ek)}','online')"><span class="et-dot ${et==='online'?'online':'unset'}"></span>ONLINE</span>
+            <span class="et-btn ${et==='paper'?'et-paper':'et-unset'}" onclick="event.stopPropagation();setExamType('${ekJS}','paper')"><span class="et-dot ${et==='paper'?'paper':'unset'}"></span>PAPER</span>
+            <span class="et-btn ${et==='online'?'et-online':'et-unset'}" onclick="event.stopPropagation();setExamType('${ekJS}','online')"><span class="et-dot ${et==='online'?'online':'unset'}"></span>ONLINE</span>
           </div>` : '';
           blocksHtml += `<div class="sb ${cls}" style="
               position:absolute;
@@ -1100,7 +1101,7 @@ function renderGrid() {
           const badges = [];
           if (student.conflict) badges.push('<span class="sb-badge conflict">⚠ CONFLICT</span>');
           if (student.removed) {
-            const dk = escH(student.student + '|' + student.date);
+            const dk = escJS(student.student + '|' + student.date);
             badges.push(`<span class="sb-badge removed" style="display:flex;align-items:center;gap:3px">⚠ NOT IN LATEST <span onclick="event.stopPropagation();dismissRemoved('${dk}')" style="cursor:pointer;font-weight:900;font-size:11px;margin-left:2px" title="Dismiss">✕</span></span>`);
           }
           const tipId = storeTip({
@@ -1112,9 +1113,10 @@ function renderGrid() {
           });
           const ek2 = etKey(student);
           const et2 = examTypes[ek2] || '';
+          const ek2JS = escJS(ek2);
           const etHtml2 = !student.removed ? `<div style="display:flex;gap:4px;margin-top:3px;flex-wrap:wrap">
-            <span class="et-btn ${et2==='paper'?'et-paper':'et-unset'}" onclick="event.stopPropagation();setExamType('${escH(ek2)}','paper')"><span class="et-dot ${et2==='paper'?'paper':'unset'}"></span>PAPER</span>
-            <span class="et-btn ${et2==='online'?'et-online':'et-unset'}" onclick="event.stopPropagation();setExamType('${escH(ek2)}','online')"><span class="et-dot ${et2==='online'?'online':'unset'}"></span>ONLINE</span>
+            <span class="et-btn ${et2==='paper'?'et-paper':'et-unset'}" onclick="event.stopPropagation();setExamType('${ek2JS}','paper')"><span class="et-dot ${et2==='paper'?'paper':'unset'}"></span>PAPER</span>
+            <span class="et-btn ${et2==='online'?'et-online':'et-unset'}" onclick="event.stopPropagation();setExamType('${ek2JS}','online')"><span class="et-dot ${et2==='online'?'online':'unset'}"></span>ONLINE</span>
           </div>` : '';
           blocksHtml += `<div class="sb ${cls}" style="
               position:absolute;
@@ -1265,8 +1267,8 @@ function searchStudent(query) {
       if (!r.slot && !r.isOfficeAssignment) {
         return `<span style="color:#b85c00;font-size:10px">⚠ ${d} · no slot assigned</span>`;
       }
-      const dn = escH(r.date);
-      const nn = escH(name);
+      const dn = escJS(r.date);
+      const nn = escJS(name);
       return `<div class="search-date-link" onclick="jumpToStudentDate('${nn}','${dn}')">
         <span style="color:var(--accent);font-weight:600">${d}</span>
         <span style="color:var(--muted)"> · ${r.startRaw}–${r.endRaw}</span>
@@ -1860,6 +1862,11 @@ function fmtDateLabel(d) {
 
 function escH(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// For values embedded inside single-quoted JS onclick attributes
+function escJS(s) {
+  return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
 }
 
 function showNotif(msg) {
