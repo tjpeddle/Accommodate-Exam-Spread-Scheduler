@@ -369,8 +369,9 @@ table.sched td.office-cell { background: #fafbff; }
     </div>
   </div>
 
-  <div class="sb-sec" style="margin-top:auto">
+  <div class="sb-sec" style="margin-top:auto;position:sticky;bottom:0;background:var(--surface);border-top:1px solid var(--border);z-index:10">
     <button class="export-btn" id="exportBtn" onclick="exportExcel()" disabled>⬇ Export Excel</button>
+    <button class="export-btn" id="exportTypeBtn" onclick="exportExamTypeDoc()" disabled style="margin-top:6px;background:#1a5fcc">⬇ Export Exam Type Doc</button>
     <button onclick="clearHistory()" style="margin-top:8px;width:100%;padding:7px;background:transparent;border:1px solid var(--border2);border-radius:6px;color:var(--muted);font-size:10px;cursor:pointer;font-family:var(--mono)" onmouseover="this.style.borderColor='#c0281a';this.style.color='#c0281a'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--muted)'">🗑 Clear Saved History</button>
   </div>
 
@@ -796,6 +797,8 @@ function refreshUI() {
   renderGrid();
   renderNeedsTypeSidebar();
   document.getElementById('exportBtn').disabled = allRecords.length === 0;
+  const etb = document.getElementById('exportTypeBtn');
+  if (etb) etb.disabled = allRecords.length === 0;
 }
 
 function getDates() {
@@ -1481,6 +1484,167 @@ function colLetter(n) { // 0-indexed
   let s = ''; n++;
   while (n > 0) { s = String.fromCharCode(64 + (n%26||26)) + s; n = Math.floor((n-1)/26); }
   return s;
+}
+
+async function exportExamTypeDoc() {
+  // Gather all active slotted students, sorted alphabetically
+  const recs = allRecords
+    .filter(r => !r.removed && (r.slot || r.isOfficeAssignment))
+    .sort((a,b) => a.student.localeCompare(b.student) || new Date(a.date)-new Date(b.date));
+
+  if (!recs.length) { showNotif('No students to export.'); return; }
+
+  const fmtDate = d => new Date(d).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+  const fmtRoom = r => {
+    const base = (r.isOfficeAssignment ? (r.officeRoom||r.room) : (r.room||''))
+      .replace(/^FINALS\s*/i,'').trim();
+    return r.slot && !r.isOfficeAssignment ? `${base} · ${r.slot}` : base;
+  };
+  const fmtType = key => {
+    const t = examTypes[key];
+    if (t === 'paper')  return { label:'PAPER',  color:'4285F4' };
+    if (t === 'online') return { label:'ONLINE',  color:'34A853' };
+    return { label:'NOT SET', color:'999999' };
+  };
+
+  // docx XML helpers
+  const xmlEsc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+  const cell = (text, opts={}) => {
+    const bold  = opts.bold  ? '<w:b/><w:bCs/>' : '';
+    const color = opts.color ? `<w:color w:val="${opts.color}"/>` : '';
+    const size  = opts.size  ? `<w:sz w:val="${opts.size}"/><w:szCs w:val="${opts.size}"/>` : '<w:sz w:val="20"/><w:szCs w:val="20"/>';
+    const shade = opts.shade ? `<w:shd w:val="clear" w:color="auto" w:fill="${opts.shade}"/>` : '';
+    const width = opts.width ? `<w:tcW w:w="${opts.width}" w:type="dxa"/>` : '<w:tcW w:w="2160" w:type="dxa"/>';
+    return `<w:tc>
+      <w:tcPr>${width}<w:tcBorders>
+        <w:top w:val="single" w:sz="4" w:color="DDDDDD"/>
+        <w:bottom w:val="single" w:sz="4" w:color="DDDDDD"/>
+        <w:left w:val="single" w:sz="4" w:color="DDDDDD"/>
+        <w:right w:val="single" w:sz="4" w:color="DDDDDD"/>
+      </w:tcBorders>${shade}<w:tcMar><w:top w:w="80" w:type="dxa"/><w:bottom w:w="80" w:type="dxa"/><w:left w:w="100" w:type="dxa"/><w:right w:w="100" w:type="dxa"/></w:tcMar></w:tcPr>
+      <w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr>
+        <w:r><w:rPr>${bold}${color}${size}</w:rPr><w:t xml:space="preserve">${xmlEsc(text)}</w:t></w:r>
+      </w:p></w:tc>`;
+  };
+
+  const hdrRow = `<w:tr>
+    ${cell('Student Name', {bold:true, shade:'330072', color:'FFFFFF', width:'2600', size:'20'})}
+    ${cell('Date',         {bold:true, shade:'330072', color:'FFFFFF', width:'1800', size:'20'})}
+    ${cell('Room / Slot',  {bold:true, shade:'330072', color:'FFFFFF', width:'2200', size:'20'})}
+    ${cell('Exam Type',    {bold:true, shade:'330072', color:'FFFFFF', width:'1400', size:'20'})}
+  </w:tr>`;
+
+  const dataRows = recs.map((r, i) => {
+    const key = etKey(r);
+    const { label, color } = fmtType(key);
+    const shade = i % 2 === 0 ? 'F7F5FF' : 'FFFFFF';
+    return `<w:tr>
+      ${cell(r.student,      {width:'2600', shade})}
+      ${cell(fmtDate(r.date),{width:'1800', shade})}
+      ${cell(fmtRoom(r),     {width:'2200', shade})}
+      ${cell(label,          {width:'1400', shade, color, bold: label !== 'NOT SET'})}
+    </w:tr>`;
+  }).join('');
+
+  const today = new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
+  const totalSet   = recs.filter(r => examTypes[etKey(r)]).length;
+  const totalUnset = recs.length - totalSet;
+
+  const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
+  xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>
+  <w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="0" w:after="80"/></w:pPr>
+    <w:r><w:rPr><w:b/><w:bCs/><w:color w:val="330072"/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr>
+      <w:t>OARS Testing Center — Exam Type Reference</w:t></w:r></w:p>
+  <w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="0" w:after="40"/></w:pPr>
+    <w:r><w:rPr><w:color w:val="666666"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr>
+      <w:t>High Point University · Office of Accessibility Resources and Services</w:t></w:r></w:p>
+  <w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="0" w:after="200"/></w:pPr>
+    <w:r><w:rPr><w:color w:val="888888"/><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr>
+      <w:t>Generated ${xmlEsc(today)} · ${recs.length} students · ${totalSet} set · ${totalUnset} not set</w:t></w:r></w:p>
+  <w:tbl>
+    <w:tblPr>
+      <w:tblStyle w:val="TableGrid"/>
+      <w:tblW w:w="8000" w:type="dxa"/>
+      <w:tblBorders>
+        <w:top    w:val="single" w:sz="6" w:color="330072"/>
+        <w:bottom w:val="single" w:sz="6" w:color="330072"/>
+        <w:left   w:val="single" w:sz="6" w:color="330072"/>
+        <w:right  w:val="single" w:sz="6" w:color="330072"/>
+      </w:tblBorders>
+      <w:tblCellMar>
+        <w:top    w:w="80"  w:type="dxa"/>
+        <w:bottom w:w="80"  w:type="dxa"/>
+        <w:left   w:w="100" w:type="dxa"/>
+        <w:right  w:w="100" w:type="dxa"/>
+      </w:tblCellMar>
+    </w:tblPr>
+    <w:tblGrid>
+      <w:gridCol w:w="2600"/>
+      <w:gridCol w:w="1800"/>
+      <w:gridCol w:w="2200"/>
+      <w:gridCol w:w="1400"/>
+    </w:tblGrid>
+    ${hdrRow}
+    ${dataRows}
+  </w:tbl>
+  <w:p><w:pPr><w:spacing w:before="200" w:after="0"/></w:pPr>
+    <w:r><w:rPr><w:color w:val="999999"/><w:sz w:val="14"/><w:szCs w:val="14"/></w:rPr>
+      <w:t>Import this doc's settings by loading it into the OARS Exam Scheduler before uploading your Accommodate export.</w:t></w:r></w:p>
+  <w:sectPr>
+    <w:pgSz w:w="12240" w:h="15840"/>
+    <w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/>
+  </w:sectPr>
+</w:body></w:document>`;
+
+  const relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+
+  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/>
+    <w:tblPr><w:tblBorders>
+      <w:top w:val="single" w:sz="4" w:color="auto"/>
+      <w:left w:val="single" w:sz="4" w:color="auto"/>
+      <w:bottom w:val="single" w:sz="4" w:color="auto"/>
+      <w:right w:val="single" w:sz="4" w:color="auto"/>
+      <w:insideH w:val="single" w:sz="4" w:color="auto"/>
+      <w:insideV w:val="single" w:sz="4" w:color="auto"/>
+    </w:tblBorders></w:tblPr>
+  </w:style>
+</w:styles>`;
+
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml"  ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml"   ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+
+  const appRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', contentTypes);
+  zip.file('_rels/.rels', appRels);
+  zip.file('word/document.xml', docXml);
+  zip.file('word/styles.xml', stylesXml);
+  zip.file('word/_rels/document.xml.rels', relsXml);
+
+  const blob = await zip.generateAsync({ type:'blob', mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `OARS_ExamTypes_${new Date().toISOString().slice(0,10)}.docx`;
+  a.click();
+  showNotif('Exam Type Doc exported!');
 }
 
 async function exportExcel() {
