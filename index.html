@@ -1578,7 +1578,6 @@ async function handlePdfZip(file) {
     let setCount = 0, skippedPaper = 0, skippedUnknown = 0, noMatch = 0;
     const skippedNames = [];
     const noMatchNames = [];
-    const onlineStudents = []; // { name, date } for hotlinks
 
     for (let i = 0; i < pdfFiles.length; i++) {
       const f = pdfFiles[i];
@@ -1602,7 +1601,6 @@ async function handlePdfZip(file) {
         if (rec) {
           examTypes[etKey(rec)] = 'online';
           setCount++;
-          onlineStudents.push({ name: rec.student, date: rec.date });
         } else {
           noMatch++;
           noMatchNames.push(studentName || fname);
@@ -1628,22 +1626,8 @@ async function handlePdfZip(file) {
     // Show summary
     summary.style.display = 'block';
 
-    // Sort online students alphabetically
-    onlineStudents.sort((a,b) => a.name.localeCompare(b.name));
-
-    const onlineLinks = onlineStudents.map(s => {
-      const d = new Date(s.date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
-      const nn = escJS(s.name);
-      const dn = escJS(s.date);
-      return `<div class="pdf-online-link" onclick="jumpToStudentDate('${nn}','${dn}')">
-        <span style="color:var(--accent);text-decoration:underline;cursor:pointer">${escH(s.name)}</span>
-        <span style="color:var(--muted);font-size:9px;margin-left:4px">${d}</span>
-      </div>`;
-    }).join('');
-
     summary.innerHTML = `
-      <div style="color:#34a853;font-weight:700;margin-bottom:4px">✓ ${setCount} set to ONLINE</div>
-      ${setCount ? `<div style="max-height:180px;overflow-y:auto;margin-bottom:6px;border:1px solid var(--border2);border-radius:6px;padding:4px 6px">${onlineLinks}</div>` : ''}
+      <div style="color:#34a853;font-weight:700">✓ ${setCount} set to ONLINE</div>
       <div style="color:var(--muted)">${skippedPaper} skipped (Paper)</div>
       ${skippedUnknown ? `<div style="color:var(--muted)">${skippedUnknown} format unclear</div>` : ''}
       ${noMatch ? `<div style="color:#b85c00">${noMatch} no grid match</div>` : ''}
