@@ -1677,10 +1677,16 @@ function detectExamFormat(text) {
 function findRecord(studentName, dateStr) {
   if (!studentName) return null;
   const nameLower = studentName.toLowerCase().trim();
+  // Normalize dateStr from PDF (YYYY-MM-DD) to match allRecords format (MM/DD/YYYY)
+  let normalizedDate = null;
+  if (dateStr) {
+    const d = new Date(dateStr + 'T00:00:00');
+    if (!isNaN(d)) normalizedDate = d.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'});
+  }
   return allRecords.find(r =>
     !r.removed &&
     r.student.toLowerCase().trim() === nameLower &&
-    (!dateStr || r.date === dateStr)
+    (!normalizedDate || r.date === normalizedDate)
   ) || null;
 }
 
