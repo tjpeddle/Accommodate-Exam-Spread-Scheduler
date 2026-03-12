@@ -210,6 +210,10 @@ table.sched td.office-cell { background: #fafbff; }
 .sb-badge.paper    { background: #555; color: #fff; }
 
 
+.pdf-online-link { display:flex;align-items:center;justify-content:space-between;padding:3px 2px;border-bottom:1px solid var(--border2);font-size:11px; }
+.pdf-online-link:last-child { border-bottom:none; }
+.pdf-online-link:hover { background:var(--accent-light);border-radius:4px; }
+
 /* EXAM TYPE */
 .et-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; vertical-align:middle; flex-shrink:0; }
 .et-btn { display:inline-flex;align-items:center;font-size:9px;font-family:var(--mono);font-weight:700;letter-spacing:.6px;padding:2px 6px;border-radius:4px;cursor:pointer;border:1px solid transparent;line-height:1.4;margin-top:3px;transition:opacity .15s; }
@@ -332,6 +336,7 @@ table.sched td.office-cell { background: #fafbff; }
       </div>
     </div>
     <div id="pdfSummary" style="display:none;margin-top:8px;font-size:10px;font-family:var(--mono);line-height:1.6"></div>
+    <div id="onlineStudentsList" style="display:none;margin-top:6px;max-height:220px;overflow-y:auto;"></div>
   </div>
 
   <div class="sb-sec">
@@ -670,6 +675,29 @@ function loadFromLocalStorage() {
   } catch(e) { return null; }
 }
 
+function renderOnlineStudentsList() {
+  const el = document.getElementById('onlineStudentsList');
+  if (!el) return;
+
+  const onlineRecs = allRecords
+    .filter(r => !r.removed && (r.slot || r.isOfficeAssignment) && examTypes[etKey(r)] === 'online')
+    .sort((a,b) => a.student.localeCompare(b.student) || new Date(a.date) - new Date(b.date));
+
+  if (!onlineRecs.length) { el.style.display = 'none'; return; }
+
+  el.style.display = 'block';
+  el.innerHTML = `<div style="font-size:9px;font-weight:700;letter-spacing:1px;color:#34a853;font-family:var(--mono);margin-bottom:4px;text-transform:uppercase">● Online Students (${onlineRecs.length})</div>` +
+    onlineRecs.map(r => {
+      const d = new Date(r.date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+      const nn = escJS(r.student);
+      const dn = escJS(r.date);
+      return `<div class="needs-type-row">
+        <span class="needs-type-link" style="color:#34a853" onclick="jumpToStudentDate('${nn}','${dn}')" title="${escH(r.student)}">${escH(r.student)}</span>
+        <span class="needs-type-date">${d}</span>
+      </div>`;
+    }).join('');
+}
+
 function renderNeedsTypeSidebar() {
   const sec  = document.getElementById('needsTypeSec');
   const list = document.getElementById('needsTypeList');
@@ -712,6 +740,7 @@ function setExamType(key, type) {
   saveToLocalStorage();
   renderGrid();
   renderNeedsTypeSidebar();
+  renderOnlineStudentsList();
 }
 
 function dismissRemoved(key) {
@@ -819,6 +848,7 @@ function refreshUI() {
   updateDateTabs();
   renderGrid();
   renderNeedsTypeSidebar();
+  renderOnlineStudentsList();
   document.getElementById('exportBtn').disabled = allRecords.length === 0;
   const etb = document.getElementById('exportTypeBtn');
   if (etb) etb.disabled = allRecords.length === 0;
@@ -1548,6 +1578,7 @@ async function handlePdfZip(file) {
     let setCount = 0, skippedPaper = 0, skippedUnknown = 0, noMatch = 0;
     const skippedNames = [];
     const noMatchNames = [];
+    const onlineStudents = []; // { name, date } for hotlinks
 
     for (let i = 0; i < pdfFiles.length; i++) {
       const f = pdfFiles[i];
@@ -1567,11 +1598,11 @@ async function handlePdfZip(file) {
       const format = detectExamFormat(text);
 
       if (format === 'online') {
-        // Find matching record
         const rec = findRecord(studentName, dateStr);
         if (rec) {
           examTypes[etKey(rec)] = 'online';
           setCount++;
+          onlineStudents.push({ name: rec.student, date: rec.date });
         } else {
           noMatch++;
           noMatchNames.push(studentName || fname);
@@ -1592,11 +1623,27 @@ async function handlePdfZip(file) {
     saveToLocalStorage();
     renderGrid();
     renderNeedsTypeSidebar();
+    renderOnlineStudentsList();
 
     // Show summary
     summary.style.display = 'block';
+
+    // Sort online students alphabetically
+    onlineStudents.sort((a,b) => a.name.localeCompare(b.name));
+
+    const onlineLinks = onlineStudents.map(s => {
+      const d = new Date(s.date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+      const nn = escJS(s.name);
+      const dn = escJS(s.date);
+      return `<div class="pdf-online-link" onclick="jumpToStudentDate('${nn}','${dn}')">
+        <span style="color:var(--accent);text-decoration:underline;cursor:pointer">${escH(s.name)}</span>
+        <span style="color:var(--muted);font-size:9px;margin-left:4px">${d}</span>
+      </div>`;
+    }).join('');
+
     summary.innerHTML = `
-      <div style="color:#34a853;font-weight:700">✓ ${setCount} set to ONLINE</div>
+      <div style="color:#34a853;font-weight:700;margin-bottom:4px">✓ ${setCount} set to ONLINE</div>
+      ${setCount ? `<div style="max-height:180px;overflow-y:auto;margin-bottom:6px;border:1px solid var(--border2);border-radius:6px;padding:4px 6px">${onlineLinks}</div>` : ''}
       <div style="color:var(--muted)">${skippedPaper} skipped (Paper)</div>
       ${skippedUnknown ? `<div style="color:var(--muted)">${skippedUnknown} format unclear</div>` : ''}
       ${noMatch ? `<div style="color:#b85c00">${noMatch} no grid match</div>` : ''}
