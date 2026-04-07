@@ -9,6 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
 
@@ -407,6 +408,8 @@ table.sched td.office-cell { background: #fafbff; }
   <div class="sb-sec" style="margin-top:auto;position:sticky;bottom:0;background:var(--surface);border-top:1px solid var(--border);z-index:10">
     <button class="export-btn" id="exportBtn" onclick="exportExcel()" disabled>⬇ Export Excel</button>
     <button class="export-btn" id="exportTypeBtn" onclick="exportExamTypeDoc()" disabled style="margin-top:6px;background:#1a5fcc">⬇ Export Exam Type Doc</button>
+    <button class="export-btn" onclick="triggerImportExamTypes()" style="margin-top:6px;background:#1a7a4a">↩ Import Exam Types</button>
+    <input type="file" id="importExamTypesInput" accept=".docx" style="display:none" onchange="importExamTypesFromDocx(this)">
     <button onclick="clearHistory()" style="margin-top:8px;width:100%;padding:7px;background:transparent;border:1px solid var(--border2);border-radius:6px;color:var(--muted);font-size:10px;cursor:pointer;font-family:var(--mono)" onmouseover="this.style.borderColor='#c0281a';this.style.color='#c0281a'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--muted)'">🗑 Clear Saved History</button>
   </div>
 
@@ -1718,7 +1721,11 @@ async function handlePdfZip(file) {
       if (format === 'online') {
         const rec = findRecord(studentName, dateStr, startHour, startMin);
         if (rec) {
-          examTypes[etKey(rec)] = 'online';
+          // Merge with existing — don't wipe out PAPER if already set
+          const existing = examTypes[etKey(rec)];
+          const arr = Array.isArray(existing) ? existing : (existing ? [existing] : []);
+          if (!arr.includes('online')) arr.push('online');
+          examTypes[etKey(rec)] = arr;
           setCount++;
         } else {
           noMatch++;
@@ -2010,6 +2017,155 @@ async function exportExamTypeDoc() {
   a.download = `OARS_ExamTypes_${new Date().toISOString().slice(0,10)}.docx`;
   a.click();
   showNotif('Exam Type Doc exported!');
+}
+
+// ══════════════════════════════════════════════════
+// IMPORT EXAM TYPES FROM DOCX
+// ══════════════════════════════════════════════════
+function triggerImportExamTypes() {
+  document.getElementById('importExamTypesInput').value = '';
+  document.getElementById('importExamTypesInput').click();
+}
+
+async function importExamTypesFromDocx(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  showNotif('Reading exam type doc...');
+
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const result = await mammoth.extractRawText({ arrayBuffer });
+    const text = result.value;
+
+    const records = parseExamTypeDocText(text);
+
+    if (!records.length) {
+      showNotif('⚠ No records found in file. Make sure it is an OARS Exam Type export.');
+      return;
+    }
+
+    // Build a lookup: normalized "name|date|room" → examType array
+    const lookup = {};
+    records.forEach(r => {
+      if (r.examType === 'not set') return; // skip unset — don't overwrite anything with blank
+      const k = normalizeImportKey(r.name, r.date, r.room);
+      lookup[k] = r.examType; // array like ['paper'] or ['online'] or ['paper','online']
+    });
+
+    // Match against current allRecords using the same etKey structure
+    let matched = 0;
+    let skipped = 0;
+
+    allRecords.forEach(rec => {
+      if (rec.removed) return;
+      // Build all reasonable key variants to match against
+      const roomStr = rec.isOfficeAssignment
+        ? (rec.officeRoom || rec.room || '')
+        : (rec.room || '');
+      const slotStr = rec.slot || '';
+      const fullRoom = slotStr
+        ? `${roomStr.replace(/^FINALS\s*/i,'').trim()} · ${slotStr}`
+        : roomStr.replace(/^FINALS\s*/i,'').trim();
+
+      const dateStr = new Date(rec.date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+
+      // Try multiple key variants (room with slot, room without, slot alone)
+      const keysToTry = [
+        normalizeImportKey(rec.student, dateStr, fullRoom),
+        normalizeImportKey(rec.student, dateStr, roomStr.replace(/^FINALS\s*/i,'').trim()),
+        normalizeImportKey(rec.student, dateStr, slotStr),
+      ];
+
+      let found = null;
+      for (const k of keysToTry) {
+        if (lookup[k]) { found = lookup[k]; break; }
+      }
+
+      if (found) {
+        examTypes[etKey(rec)] = found;
+        matched++;
+      } else {
+        skipped++;
+      }
+    });
+
+    saveToLocalStorage();
+    renderGrid();
+    renderNeedsTypeSidebar();
+    renderOnlineStudentsList();
+
+    showNotif(`↩ Imported ${matched} exam types restored${skipped ? ` · ${skipped} not matched` : ''}`);
+    console.log(`[Import] ${matched} matched, ${skipped} not matched out of ${records.length} parsed records`);
+
+  } catch(e) {
+    showNotif('Error reading file: ' + e.message);
+    console.error('[Import]', e);
+  }
+}
+
+function parseExamTypeDocText(text) {
+  const results = [];
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  const dateRe = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+$/;
+
+  function isExamTypeLine(l) {
+    return /^(PAPER \+ ONLINE|PAPER\+ONLINE|PAPER|ONLINE|NOT SET)$/i.test(l);
+  }
+  function isRoomLine(l) {
+    return l.includes('slot-') || /^\d{3}$/.test(l) || l.includes('Smith Library') ||
+           l.includes('Computer Lab') || l.includes('Overflow') || l.includes('402') ||
+           l.includes('403') || l.includes('404') || l.includes('405') || l.includes('407') || l.includes('408');
+  }
+  function toExamTypeArr(str) {
+    const s = str.trim().toUpperCase();
+    if (s.includes('PAPER') && s.includes('ONLINE')) return ['paper','online'];
+    if (s === 'PAPER') return ['paper'];
+    if (s === 'ONLINE') return ['online'];
+    return 'not set';
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!dateRe.test(lines[i])) continue;
+
+    const date = lines[i];
+    // Name is the line before the date (skip if it looks like a room/type/date)
+    let name = '';
+    if (i > 0 && !dateRe.test(lines[i-1]) && !isExamTypeLine(lines[i-1]) && !isRoomLine(lines[i-1])) {
+      name = lines[i-1];
+    }
+    if (!name) continue;
+
+    // Room follows date — may span 2 lines (e.g. "Computer Lab Spring" + "2026 · slot-5")
+    let room = '';
+    let j = i + 1;
+    while (j < lines.length && !isExamTypeLine(lines[j]) && !dateRe.test(lines[j])) {
+      room += (room ? ' ' : '') + lines[j];
+      j++;
+      if (room.includes('slot-') || /^\d{3,}$/.test(room.trim()) || room.includes('Overflow')) break;
+    }
+
+    // Exam type
+    let examType = 'not set';
+    if (j < lines.length && isExamTypeLine(lines[j])) {
+      examType = toExamTypeArr(lines[j]);
+      j++;
+    }
+
+    results.push({ name: name.trim(), date: date.trim(), room: room.trim(), examType });
+    i = j - 1;
+  }
+
+  return results;
+}
+
+function normalizeImportKey(name, date, room) {
+  return [name, date, room]
+    .map(s => (s||'').toLowerCase()
+      .replace(/^finals\s*/i,'')
+      .replace(/\s+/g,' ')
+      .trim()
+    ).join('||');
 }
 
 async function exportExcel() {
