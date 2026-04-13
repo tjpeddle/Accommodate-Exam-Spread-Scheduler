@@ -180,7 +180,7 @@ table.sched .shr th { position: sticky; top: 27px; z-index: 10; }
 
 table.sched td {
   border-right: 1px solid var(--border2); border-bottom: 1px solid var(--border2);
-  vertical-align: top; padding: 0; min-width: 150px; width: 150px; height: 30px; position: relative;
+  vertical-align: top; padding: 0; min-width: 150px; width: 150px; height: 50px; position: relative;
   overflow: visible;
 }
 table.sched td.time-cell {
@@ -455,6 +455,7 @@ table.sched td.office-cell { background: #fafbff; }
 // CONSTANTS
 // ══════════════════════════════════════════════════
 const SLOT_MIN = 30; // minutes per row
+const PX_PER_SLOT = 50; // pixels per 30-min slot row (increase for more card height)
 
 // Known room → floor mapping
 const ROOM_FLOOR_MAP = {
@@ -653,12 +654,11 @@ function processRows(rows, fileType) {
     };
   }).filter(Boolean);
 
-  // Mark removed: was in previous upload of same type AND same date, not in new upload
-  // Only flag within dates that appear in the new upload — different date ranges are never flagged
-  const newDates = new Set(parsed.map(r => r.date));
+  // Mark removed: was in previous upload of same type, not in new upload
+  // Flag ALL prior records of this fileType not present in new upload (not just date-matched)
   const newKeys  = new Set(parsed.map(r => r.student + '|' + r.date));
   const removedRecords = allRecords
-    .filter(r => r.fileType === fileType && newDates.has(r.date) && !newKeys.has(r.student + '|' + r.date))
+    .filter(r => r.fileType === fileType && !newKeys.has(r.student + '|' + r.date))
     .map(r => ({ ...r, removed: true, status: 'removed' }));
 
   // Replace records of this file type, keep other type + removed
@@ -798,10 +798,30 @@ function dismissRemoved(key) {
     payload.dismissed = [...dismissedRemoved];
     localStorage.setItem(LS_KEY, JSON.stringify(payload));
   } catch(e) {}
-  // Remove the record entirely from allRecords
-  allRecords = allRecords.filter(r => !(r.removed && (r.student + '|' + r.date) === key));
+  // Remove the record entirely from allRecords (removed OR crossDupe pending)
+  allRecords = allRecords.filter(r => {
+    const k = r.student + '|' + r.date;
+    if (k !== key) return true;
+    if (r.removed) return false;
+    if (r.crossDupe && r.fileType === 'pending') return false;
+    return true;
+  });
   updateStats();
   renderGrid();
+}
+
+function dismissAllRemoved() {
+  allRecords.filter(r => r.removed).forEach(r => dismissedRemoved.add(r.student + '|' + r.date));
+  allRecords = allRecords.filter(r => !r.removed);
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    const payload = raw ? JSON.parse(raw) : {};
+    payload.dismissed = [...dismissedRemoved];
+    localStorage.setItem(LS_KEY, JSON.stringify(payload));
+  } catch(e) {}
+  updateStats();
+  renderGrid();
+  renderNeedsTypeSidebar();
 }
 
 function clearHistory() {
@@ -861,8 +881,21 @@ function detectFloor(room) {
 // CONFLICT DETECTION — same slot + date + overlap
 // ══════════════════════════════════════════════════
 function detectConflicts() {
-  allRecords.forEach(r => { r.conflict = false; r.conflictWith = []; });
+  allRecords.forEach(r => { r.conflict = false; r.conflictWith = []; r.crossDupe = false; });
   const active = allRecords.filter(r => !r.removed);
+
+  // Cross-file duplicate: same student+date+slot in both approved and pending
+  // Mark the pending one as a crossDupe so it can be dismissed
+  const approvedKeys = new Set(
+    active.filter(r => r.fileType === 'approved')
+          .map(r => (r.student + '|' + r.date + '|' + (r.slot || r.officeRoom || '')).toLowerCase())
+  );
+  active.forEach(r => {
+    if (r.fileType === 'pending') {
+      const k = (r.student + '|' + r.date + '|' + (r.slot || r.officeRoom || '')).toLowerCase();
+      if (approvedKeys.has(k)) r.crossDupe = true;
+    }
+  });
   for (let i = 0; i < active.length; i++) {
     const a = active[i];
     if (a.startMin === null || a.endMin === null) continue;
@@ -959,10 +992,14 @@ function updateStats() {
       removedRecs.forEach(r => { if (!byDate[r.date]) byDate[r.date] = []; byDate[r.date].push(r); });
       const listHtml = Object.entries(byDate).sort(([a],[b])=>new Date(a)-new Date(b)).map(([date, recs]) => {
         const dateLabel = new Date(date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
-        const rows = recs.map(r => `<div style="padding:2px 0 2px 8px;border-left:2px solid #b85c00;margin:2px 0;font-size:10px">
-          <span style="font-weight:600">${escH(r.student)}</span>
-          <span style="color:#7a3d00;margin-left:4px">${r.startRaw}–${r.endRaw}</span>
-        </div>`).join('');
+        const rows = recs.map(r => {
+          const dk = escJS(r.student + '|' + r.date);
+          return `<div style="display:flex;justify-content:space-between;align-items:center;padding:2px 0 2px 8px;border-left:2px solid #b85c00;margin:2px 0;font-size:10px">
+            <span><span style="font-weight:600">${escH(r.student)}</span>
+            <span style="color:#7a3d00;margin-left:4px">${r.startRaw}–${r.endRaw}</span></span>
+            <span onclick="dismissRemoved('${dk}')" style="cursor:pointer;color:#b85c00;font-weight:900;font-size:13px;padding:0 4px;line-height:1" title="Dismiss">✕</span>
+          </div>`;
+        }).join('');
         return `<div style="margin-top:5px"><div style="font-weight:700;font-size:10px;color:#7a3d00">${dateLabel} (${recs.length})</div>${rows}</div>`;
       }).join('');
       elR.style.display = 'block';
@@ -971,7 +1008,10 @@ function updateStats() {
           <span>⚠ ${removedRecs.length} student${removedRecs.length>1?'s':''} not in latest upload</span>
           <span style="font-size:11px;opacity:0.7">▼</span>
         </div>
-        <div style="display:none;margin-top:6px;max-height:220px;overflow-y:auto">${listHtml}</div>
+        <div style="display:none;margin-top:6px;max-height:220px;overflow-y:auto">
+          <div style="text-align:right;margin-bottom:4px"><span onclick="dismissAllRemoved()" style="cursor:pointer;font-size:10px;color:#b85c00;font-weight:700;font-family:var(--mono)">Dismiss All ✕</span></div>
+          ${listHtml}
+        </div>
       `;
     }
   }
@@ -1097,7 +1137,7 @@ function renderGrid() {
   // This eliminates all rowspan collision issues with staggered overlaps.
 
   const totalRows  = timeSlots.length;
-  const totalH     = totalRows * 30;
+  const totalH     = totalRows * PX_PER_SLOT;
 
   // Pre-group students by column index — use filtered recs so filter buttons work
   // Office-assigned students (room = "407" etc) go into their matching office column
@@ -1185,19 +1225,23 @@ function renderGrid() {
       if (col.type === 'slot') {
         colRendered[ci] = true;
         const spanRows = totalRows - ri;
-        const tdH = totalRows * 30; // always full day height for correct absolute positioning
+        const tdH = totalRows * PX_PER_SLOT; // always full day height for correct absolute positioning
 
         let blocksHtml = '';
         colLayouts[ci].forEach(student => {
-          const topPx    = (student.startMin - minT) * (30 / SLOT_MIN);
+          const topPx    = (student.startMin - minT) * (PX_PER_SLOT / SLOT_MIN);
           const durM     = student.durMin || 60;
-          const heightPx = Math.max(28, durM * (30 / SLOT_MIN) - 3);
+          const heightPx = Math.max(28, durM * (PX_PER_SLOT / SLOT_MIN) - 3);
           const leftPct  = student.leftPct;
           const widthPct = student.widthPct;
           const cls = student.removed ? 'removed' : student.conflict ? 'conflict' : student.status;
           const courseShort = (student.course||'').split('(')[0].trim().substring(0, 38);
           const badges = [];
           if (student.conflict) badges.push('<span class="sb-badge conflict">⚠ CONFLICT</span>');
+          if (student.crossDupe) {
+            const dk = escJS(student.student + '|' + student.date);
+            badges.push(`<span class="sb-badge removed" style="display:flex;align-items:center;gap:3px">↑ NOW APPROVED <span onclick="event.stopPropagation();dismissRemoved('${dk}')" style="cursor:pointer;font-weight:900;font-size:11px;margin-left:2px" title="Dismiss pending">✕</span></span>`);
+          }
           if (student.removed) {
             const dk = escJS(student.student + '|' + student.date);
             badges.push(`<span class="sb-badge removed" style="display:flex;align-items:center;gap:3px">⚠ NOT IN LATEST <span onclick="event.stopPropagation();dismissRemoved('${dk}')" style="cursor:pointer;font-weight:900;font-size:11px;margin-left:2px" title="Dismiss">✕</span></span>`);
@@ -1239,18 +1283,22 @@ function renderGrid() {
       } else if (col.type === 'office') {
         colRendered[ci] = true;
         const spanRows = totalRows - ri;
-        const tdH = totalRows * 30;
+        const tdH = totalRows * PX_PER_SLOT;
 
         const laid = layoutColumn(colStudents[ci]);
         let blocksHtml = '';
         laid.forEach(student => {
-          const topPx    = (student.startMin - minT) * (30 / SLOT_MIN);
+          const topPx    = (student.startMin - minT) * (PX_PER_SLOT / SLOT_MIN);
           const durM     = student.durMin || 60;
-          const heightPx = Math.max(28, durM * (30 / SLOT_MIN) - 3);
+          const heightPx = Math.max(28, durM * (PX_PER_SLOT / SLOT_MIN) - 3);
           const cls = student.removed ? 'removed' : student.conflict ? 'conflict' : student.status;
           const courseShort = (student.course||'').split('(')[0].trim().substring(0, 38);
           const badges = [];
           if (student.conflict) badges.push('<span class="sb-badge conflict">⚠ CONFLICT</span>');
+          if (student.crossDupe) {
+            const dk2 = escJS(student.student + '|' + student.date);
+            badges.push(`<span class="sb-badge removed" style="display:flex;align-items:center;gap:3px">↑ NOW APPROVED <span onclick="event.stopPropagation();dismissRemoved('${dk2}')" style="cursor:pointer;font-weight:900;font-size:11px;margin-left:2px" title="Dismiss pending">✕</span></span>`);
+          }
           if (student.removed) {
             const dk = escJS(student.student + '|' + student.date);
             badges.push(`<span class="sb-badge removed" style="display:flex;align-items:center;gap:3px">⚠ NOT IN LATEST <span onclick="event.stopPropagation();dismissRemoved('${dk}')" style="cursor:pointer;font-weight:900;font-size:11px;margin-left:2px" title="Dismiss">✕</span></span>`);
