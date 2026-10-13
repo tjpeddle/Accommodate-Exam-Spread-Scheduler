@@ -2155,6 +2155,85 @@ function escXml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');
 }
 
+async function exportUnclearInstructorsDoc() {
+  const newEmails = Object.keys(unclearInstructors).filter(e => !notifiedInstructors[e]);
+  const allEmails = Object.keys(unclearInstructors);
+  if (!allEmails.length) { showNotif('No unclear instructors found.'); return; }
+
+  const now = new Date().toISOString();
+  const emailListNew  = newEmails.map(e => unclearInstructors[e].email || e);
+  const prevEmails    = allEmails.filter(e => notifiedInstructors[e]);
+
+  const makeRow = (label, emails) => {
+    if (!emails.length) return '';
+    return `
+      <w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>${escXml(label)}</w:t></w:r></w:p>
+      ${emails.map(e => `<w:p><w:r><w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/><w:sz w:val="20"/></w:rPr><w:t>${escXml(e)}</w:t></w:r></w:p>`).join('')}
+      <w:p><w:r><w:t> </w:t></w:r></w:p>`;
+  };
+
+  const dateLabel = new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
+  const body = `
+    <w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>Unclear Format — Instructor Emails</w:t></w:r></w:p>
+    <w:p><w:r><w:rPr><w:color w:val="888888"/><w:sz w:val="18"/></w:rPr><w:t>Generated ${escXml(dateLabel)}</w:t></w:r></w:p>
+    <w:p><w:r><w:t> </w:t></w:r></w:p>
+    ${makeRow('New — Not Yet Emailed', emailListNew)}
+    ${makeRow('Previously Exported', prevEmails.map(e => unclearInstructors[e].email || e))}
+  `;
+
+  const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>${body}<w:sectPr/></w:body></w:document>`;
+
+  const relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+
+  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr><w:sz w:val="22"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/>
+    <w:rPr><w:b/><w:sz w:val="36"/><w:color w:val="1a1f2e"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/>
+    <w:pPr><w:spacing w:before="240" w:after="60"/></w:pPr>
+    <w:rPr><w:b/><w:sz w:val="24"/><w:color w:val="B85C00"/></w:rPr></w:style>
+</w:styles>`;
+
+  const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+
+  const rootRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+
+  try {
+    const zip = new JSZip();
+    zip.file('[Content_Types].xml', contentTypesXml);
+    zip.file('_rels/.rels', rootRelsXml);
+    zip.file('word/document.xml', docXml);
+    zip.file('word/styles.xml', stylesXml);
+    zip.file('word/_rels/document.xml.rels', relsXml);
+
+    const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `instructor_emails_${new Date().toISOString().slice(0,10)}.docx`; a.click();
+    URL.revokeObjectURL(url);
+
+    newEmails.forEach(e => { notifiedInstructors[e] = { name: unclearInstructors[e].name, firstSeen: now }; });
+    saveToLocalStorage();
+    renderUnclearInstructorsSidebar();
+    showNotif(`Exported ${allEmails.length} email${allEmails.length!==1?'s':''}. ${newEmails.length} marked as notified.`);
+  } catch(e) { console.error('Export error:', e); showNotif('Export failed: ' + e.message); }
+}
+
 function clearEmailHistory() {
   if (!Object.keys(notifiedInstructors).length) { showNotif('No email history to clear.'); return; }
   notifiedInstructors = {};
