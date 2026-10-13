@@ -1920,18 +1920,28 @@ function detectExamFormat(text) {
 
 // ── Instructor email extraction ──────────────────────────────────────────────
 function extractInstructorInfo(text) {
-  // PDF cover sheet format:  "Name: Kenneth McKenna kmckenn2@highpoint.edu"
-  // email regex
+  // Faculty Information table format:
+  //   "Name: Taffey Stout - tstout1@highpoint.edu"
+  //   (name and email separated by " - ")
+  // Also handles plain space separation: "Name: Kenneth McKenna kmckenn2@highpoint.edu"
   const emailRe = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
-  // Find "Name:" label (case-insensitive, allow extra spaces)
-  const nameMatch = text.match(/Name\s*:\s*(.+)/i);
+
+  // Find "Name:" label under Faculty Information section
+  // Look for the faculty name line — may appear after "Faculty Information" heading
+  const facultyMatch = text.match(/Faculty\s+Information[\s\S]{0,300}?Name\s*:\s*(.+?)(?:\n|$)/i);
+  const nameMatch = facultyMatch || text.match(/Name\s*:\s*(.+?)(?:\n|$)/i);
   if (!nameMatch) return null;
+
   const segment = nameMatch[1].trim();
   const emailMatch = segment.match(emailRe);
   if (!emailMatch) return null;
+
   const email = emailMatch[0].toLowerCase().trim();
-  // Name is everything before the email in the segment
-  const name = segment.slice(0, segment.indexOf(emailMatch[0])).trim() || 'Unknown';
+
+  // Name is everything before the email, strip trailing " -" or spaces
+  const namePart = segment.slice(0, segment.indexOf(emailMatch[0])).replace(/\s*-\s*$/, '').trim();
+  const name = namePart || 'Unknown';
+
   return { name, email };
 }
 
