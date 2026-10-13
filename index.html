@@ -358,9 +358,13 @@ table.sched td.office-cell { background: #fafbff; }
   </div>
 
   <div class="sb-sec" id="instructorExcelSec" style="display:none">
-    <div class="sb-title">Instructor List Export</div>
-    <div style="font-size:10px;color:var(--muted);margin-bottom:6px">All instructors from current ZIP — name, email, class length, format.</div>
+    <div class="sb-title" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Instructor List Export</span>
+      <span id="instructorExcelCount" style="font-size:10px;color:var(--muted);font-family:var(--mono)"></span>
+    </div>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:6px">Accumulates across both ZIPs — load Approved then Pending before exporting.</div>
     <button onclick="exportInstructorExcel()" style="width:100%;padding:6px 10px;background:#1a7a4a;color:#fff;border:none;border-radius:6px;font-family:var(--mono);font-size:10px;font-weight:700;cursor:pointer;letter-spacing:.5px;text-transform:uppercase">⬇ Export Excel</button>
+    <button onclick="allInstructorRows=[];document.getElementById('instructorExcelSec').style.display='none';showNotif('Instructor list cleared.')" style="margin-top:5px;width:100%;padding:5px;background:transparent;border:1px solid var(--border2);border-radius:6px;color:var(--muted);font-size:10px;cursor:pointer;font-family:var(--mono)" onmouseover="this.style.borderColor='#c0281a';this.style.color='#c0281a'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--muted)'">↺ Clear List</button>
   </div>
 
   <div class="sb-sec">
@@ -1768,9 +1772,8 @@ async function handlePdfZip(file) {
     const pdfFiles = Object.values(zip.files).filter(f => !f.dir && f.name.toLowerCase().endsWith('.pdf'));
     if (!pdfFiles.length) { showNotif('No PDFs found in zip.'); prog.style.display='none'; return; }
 
-    // Reset per-ZIP data
+    // Reset unclear instructors for this ZIP, but ACCUMULATE allInstructorRows across ZIPs
     unclearInstructors = {};
-    allInstructorRows  = [];
 
     let setCount = 0, skippedPaper = 0, skippedUnknown = 0, noMatch = 0;
     const skippedNames = [];
@@ -1793,7 +1796,7 @@ async function handlePdfZip(file) {
       // Find the exam format answer
       const format = detectExamFormat(text);
 
-      // Collect instructor row for Excel export (all PDFs)
+      // Collect instructor row for Excel export (all PDFs, accumulates across ZIPs)
       const instrInfo2 = extractInstructorInfo(text);
       const classLen   = extractClassLength(text);
       if (instrInfo2) {
@@ -1801,8 +1804,7 @@ async function handlePdfZip(file) {
           name: instrInfo2.name,
           email: instrInfo2.email,
           classLength: classLen,
-          format: format === 'online' ? 'Online' : format === 'paper' ? 'Paper' : 'Unclear',
-          student: studentName || fname
+          format: format === 'online' ? 'Online' : format === 'paper' ? 'Paper' : 'Unclear'
         });
       }
 
@@ -1858,7 +1860,11 @@ async function handlePdfZip(file) {
     renderOnlineStudentsList();
     renderUnclearInstructorsSidebar();
     const excelSec = document.getElementById('instructorExcelSec');
-    if (excelSec) excelSec.style.display = allInstructorRows.length ? 'block' : 'none';
+    if (excelSec) {
+      excelSec.style.display = allInstructorRows.length ? 'block' : 'none';
+      const excelCnt = document.getElementById('instructorExcelCount');
+      if (excelCnt) excelCnt.textContent = allInstructorRows.length + ' rows';
+    }
 
     // Show summary
     summary.style.display = 'block';
@@ -1942,36 +1948,74 @@ function detectExamFormat(text) {
 }
 
 // ── Instructor email extraction ──────────────────────────────────────────────
-function extractInstructorInfo(text) {
-  // Faculty Information table format:
-  //   "Name: Taffey Stout - tstout1@highpoint.edu"
-  //   (name and email separated by " - ")
-  // Also handles plain space separation: "Name: Kenneth McKenna kmckenn2@highpoint.edu"
-  const emailRe = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
-
-  // Find "Name:" label under Faculty Information section
-  // Look for the faculty name line — may appear after "Faculty Information" heading
-  const facultyMatch = text.match(/Faculty\s+Information[\s\S]{0,300}?Name\s*:\s*(.+?)(?:\n|$)/i);
-  const nameMatch = facultyMatch || text.match(/Name\s*:\s*(.+?)(?:\n|$)/i);
-  if (!nameMatch) return null;
-
-  const segment = nameMatch[1].trim();
-  const emailMatch = segment.match(emailRe);
-  if (!emailMatch) return null;
-
-  const email = emailMatch[0].toLowerCase().trim();
-
-  // Name is everything before the email, strip trailing " -" or spaces
-  const namePart = segment.slice(0, segment.indexOf(emailMatch[0])).replace(/\s*-\s*$/, '').trim();
-  const name = namePart || 'Unknown';
-
-  return { name, email };
+function extractClassLength(text) {
+  // Format A: "Length in class:75" or "Length in class: 240"
+  const mA = text.match(/Length\s+in\s+class\s*:?\s*(\d+)/i);
+  if (mA) return parseInt(mA[1]);
+  // Format B: "How much time will the entire class have to complete this exam? 180"
+  const mB = text.match(/how much time will the entire class have[^?]*\?\s*(\d+)/i);
+  if (mB) return parseInt(mB[1]);
+  return null;
 }
 
-function extractClassLength(text) {
-  // "Length in class: 240" or "Length in class:240"
-  const m = text.match(/Length\s+in\s+class\s*:?\s*(\d+)/i);
-  return m ? parseInt(m[1]) : null;
+function extractInstructorInfo(text) {
+  // Normalize line endings
+  const lines = text.replace(/\r/g, '').split('\n').map(l => l.trim()).filter(Boolean);
+  const emailRe = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
+
+  // Find the Faculty Information section
+  let facultyIdx = lines.findIndex(l => /Faculty\s+Information/i.test(l));
+  if (facultyIdx === -1) facultyIdx = 0; // fall back to searching whole doc
+
+  const searchLines = lines.slice(facultyIdx, facultyIdx + 15);
+
+  let name = null;
+  let email = null;
+
+  for (let i = 0; i < searchLines.length; i++) {
+    const line = searchLines[i];
+
+    // Format A: "Name: Kenneth McKenna kmckenn2@highpoint.edu"  (all on one line)
+    // Format C: "Name: Taffey Stout - tstout1@highpoint.edu"    (dash separator)
+    const nameLineMatch = line.match(/^(?:Faculty\s+)?Name\s*:\s*(.+)/i);
+    if (nameLineMatch) {
+      const seg = nameLineMatch[1].trim();
+      const emailMatch = seg.match(emailRe);
+      if (emailMatch) {
+        email = emailMatch[0].toLowerCase();
+        name  = seg.slice(0, seg.indexOf(emailMatch[0])).replace(/\s*-\s*$/, '').trim();
+        break;
+      } else {
+        // Name is on this line, email may be on the next line
+        // e.g. "Faculty Name: Roger Vaughan" then "- rvaughan@highpoint.edu"
+        name = seg.replace(/^-\s*/, '').trim();
+        // Look ahead up to 3 lines for the email
+        for (let j = i + 1; j < Math.min(i + 4, searchLines.length); j++) {
+          const nextLine = searchLines[j];
+          const nextEmail = nextLine.match(emailRe);
+          if (nextEmail) {
+            email = nextEmail[0].toLowerCase();
+            // Clean leading dash from name if needed
+            name = name.replace(/\s*-\s*$/, '').trim();
+            break;
+          }
+        }
+        if (email) break;
+      }
+    }
+
+    // Standalone email line with leading dash: "- rvaughan@highpoint.edu"
+    if (!email) {
+      const standaloneEmail = line.match(emailRe);
+      if (standaloneEmail && name) {
+        email = standaloneEmail[0].toLowerCase();
+        break;
+      }
+    }
+  }
+
+  if (!email) return null;
+  return { name: name || 'Unknown', email };
 }
 
 function renderUnclearInstructorsSidebar() {
@@ -2124,15 +2168,14 @@ function exportInstructorExcel() {
 
   // Build worksheet rows
   const wsData = [
-    ['Instructor Name', 'Email', 'Class Length (min)', 'Exam Format', 'Student']
+    ['Instructor Name', 'Email', 'Class Length (min)', 'Exam Format']
   ];
   allInstructorRows.forEach(r => {
     wsData.push([
       r.name || '',
       r.email || '',
       r.classLength != null ? r.classLength : '',
-      r.format || '',
-      r.student || ''
+      r.format || ''
     ]);
   });
 
@@ -2143,8 +2186,7 @@ function exportInstructorExcel() {
     { wch: 24 }, // Name
     { wch: 30 }, // Email
     { wch: 20 }, // Class Length
-    { wch: 16 }, // Format
-    { wch: 28 }  // Student
+    { wch: 16 }  // Format
   ];
 
   const wb = XLSX.utils.book_new();
