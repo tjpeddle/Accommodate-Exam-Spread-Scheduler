@@ -1799,7 +1799,17 @@ async function handlePdfZip(file) {
           noMatchNames.push(studentName || fname);
         }
       } else if (format === 'paper') {
-        skippedPaper++;
+        const rec = findRecord(studentName, dateStr, startHour, startMin);
+        if (rec) {
+          const existing = examTypes[etKey(rec)];
+          const arr = Array.isArray(existing) ? existing : (existing ? [existing] : []);
+          if (!arr.includes('paper')) arr.push('paper');
+          examTypes[etKey(rec)] = arr;
+          skippedPaper++;
+        } else {
+          skippedPaper++;
+          noMatchNames.push(studentName || fname);
+        }
         skippedNames.push(studentName || fname);
       } else {
         skippedUnknown++;
@@ -1832,7 +1842,7 @@ async function handlePdfZip(file) {
 
     summary.innerHTML = `
       <div style="color:#34a853;font-weight:700">✓ ${setCount} set to ONLINE</div>
-      <div style="color:var(--muted)">${skippedPaper} skipped (Paper)</div>
+      <div style="color:#4285f4;font-weight:700">✓ ${skippedPaper} set to PAPER</div>
       ${skippedUnknown ? `<div style="color:var(--muted)">${skippedUnknown} format unclear</div>` : ''}
       ${noMatch ? `<div style="color:#b85c00">${noMatch} no grid match</div>` : ''}
       ${noMatchNames.length ? `<div style="margin-top:4px;color:var(--muted);font-size:9px">${noMatchNames.slice(0,5).map(n=>escH(n)).join('<br>')}${noMatchNames.length>5?`<br>+${noMatchNames.length-5} more`:''}</div>` : ''}
