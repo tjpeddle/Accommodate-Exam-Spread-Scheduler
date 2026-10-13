@@ -357,6 +357,12 @@ table.sched td.office-cell { background: #fafbff; }
     <button onclick="clearEmailHistory()" style="margin-top:5px;width:100%;padding:5px;background:transparent;border:1px solid var(--border2);border-radius:6px;color:var(--muted);font-size:10px;cursor:pointer;font-family:var(--mono)" onmouseover="this.style.borderColor='#c0281a';this.style.color='#c0281a'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--muted)'">↺ Clear Email History</button>
   </div>
 
+  <div class="sb-sec" id="instructorExcelSec" style="display:none">
+    <div class="sb-title">Instructor List Export</div>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:6px">All instructors from current ZIP — name, email, class length, format.</div>
+    <button onclick="exportInstructorExcel()" style="width:100%;padding:6px 10px;background:#1a7a4a;color:#fff;border:none;border-radius:6px;font-family:var(--mono);font-size:10px;font-weight:700;cursor:pointer;letter-spacing:.5px;text-transform:uppercase">⬇ Export Excel</button>
+  </div>
+
   <div class="sb-sec">
     <div class="sb-title">Search Student</div>
     <div style="position:relative">
@@ -514,6 +520,7 @@ let dismissedRemoved = new Set(); // student|date keys dismissed by user
 let examTypes = {};  // key: student|date|slot → 'paper'|'online'
 let notifiedInstructors = {};  // email → { name, firstSeen: ISO date } — persisted in localStorage
 let unclearInstructors   = {};  // email → { name, students: [] } — built fresh each ZIP load
+let allInstructorRows    = [];  // { name, email, classLength, format, student } — built fresh each ZIP load, for Excel export
 
 // ══════════════════════════════════════════════════
 // INIT
@@ -1761,8 +1768,9 @@ async function handlePdfZip(file) {
     const pdfFiles = Object.values(zip.files).filter(f => !f.dir && f.name.toLowerCase().endsWith('.pdf'));
     if (!pdfFiles.length) { showNotif('No PDFs found in zip.'); prog.style.display='none'; return; }
 
-    // Reset unclear instructors for this fresh ZIP load
+    // Reset per-ZIP data
     unclearInstructors = {};
+    allInstructorRows  = [];
 
     let setCount = 0, skippedPaper = 0, skippedUnknown = 0, noMatch = 0;
     const skippedNames = [];
@@ -1784,6 +1792,19 @@ async function handlePdfZip(file) {
 
       // Find the exam format answer
       const format = detectExamFormat(text);
+
+      // Collect instructor row for Excel export (all PDFs)
+      const instrInfo2 = extractInstructorInfo(text);
+      const classLen   = extractClassLength(text);
+      if (instrInfo2) {
+        allInstructorRows.push({
+          name: instrInfo2.name,
+          email: instrInfo2.email,
+          classLength: classLen,
+          format: format === 'online' ? 'Online' : format === 'paper' ? 'Paper' : 'Unclear',
+          student: studentName || fname
+        });
+      }
 
       if (format === 'online') {
         const rec = findRecord(studentName, dateStr, startHour, startMin);
@@ -1836,6 +1857,8 @@ async function handlePdfZip(file) {
     renderNeedsTypeSidebar();
     renderOnlineStudentsList();
     renderUnclearInstructorsSidebar();
+    const excelSec = document.getElementById('instructorExcelSec');
+    if (excelSec) excelSec.style.display = allInstructorRows.length ? 'block' : 'none';
 
     // Show summary
     summary.style.display = 'block';
@@ -1943,6 +1966,12 @@ function extractInstructorInfo(text) {
   const name = namePart || 'Unknown';
 
   return { name, email };
+}
+
+function extractClassLength(text) {
+  // "Length in class: 240" or "Length in class:240"
+  const m = text.match(/Length\s+in\s+class\s*:?\s*(\d+)/i);
+  return m ? parseInt(m[1]) : null;
 }
 
 function renderUnclearInstructorsSidebar() {
@@ -2088,6 +2117,39 @@ function clearEmailHistory() {
   saveToLocalStorage();
   renderUnclearInstructorsSidebar();
   showNotif('Email history cleared. All instructors will appear as New on next export.');
+}
+
+function exportInstructorExcel() {
+  if (!allInstructorRows.length) { showNotif('No instructor data — load a ZIP first.'); return; }
+
+  // Build worksheet rows
+  const wsData = [
+    ['Instructor Name', 'Email', 'Class Length (min)', 'Exam Format', 'Student']
+  ];
+  allInstructorRows.forEach(r => {
+    wsData.push([
+      r.name || '',
+      r.email || '',
+      r.classLength != null ? r.classLength : '',
+      r.format || '',
+      r.student || ''
+    ]);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+  // Column widths
+  ws['!cols'] = [
+    { wch: 24 }, // Name
+    { wch: 30 }, // Email
+    { wch: 20 }, // Class Length
+    { wch: 16 }, // Format
+    { wch: 28 }  // Student
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Instructors');
+  XLSX.writeFile(wb, `instructor_list_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
 function findRecord(studentName, dateStr, startHour, startMin) {
