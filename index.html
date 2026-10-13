@@ -347,6 +347,16 @@ table.sched td.office-cell { background: #fafbff; }
     <div id="onlineStudentsList" style="display:none;margin-top:6px;max-height:220px;overflow-y:auto;"></div>
   </div>
 
+  <div class="sb-sec" id="unclearInstructorsSec" style="display:none">
+    <div class="sb-title" style="display:flex;justify-content:space-between;align-items:center">
+      <span>Unclear Format — Instructors</span>
+      <span id="unclearInstructorsCount" style="font-size:10px;color:#b85c00;font-family:var(--mono)"></span>
+    </div>
+    <div id="unclearInstructorsList" style="max-height:200px;overflow-y:auto;margin-bottom:8px;"></div>
+    <button id="exportUnclearBtn" onclick="exportUnclearInstructorsDoc()" style="width:100%;padding:6px 10px;background:#b85c00;color:#fff;border:none;border-radius:6px;font-family:var(--mono);font-size:10px;font-weight:700;cursor:pointer;letter-spacing:.5px;text-transform:uppercase">⬇ Export Instructor Emails</button>
+    <button onclick="clearEmailHistory()" style="margin-top:5px;width:100%;padding:5px;background:transparent;border:1px solid var(--border2);border-radius:6px;color:var(--muted);font-size:10px;cursor:pointer;font-family:var(--mono)" onmouseover="this.style.borderColor='#c0281a';this.style.color='#c0281a'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--muted)'">↺ Clear Email History</button>
+  </div>
+
   <div class="sb-sec">
     <div class="sb-title">Search Student</div>
     <div style="position:relative">
@@ -502,6 +512,8 @@ let currentDate   = null;
 let uploadCount   = { approved: 0, pending: 0 };
 let dismissedRemoved = new Set(); // student|date keys dismissed by user
 let examTypes = {};  // key: student|date|slot → 'paper'|'online'
+let notifiedInstructors = {};  // email → { name, firstSeen: ISO date } — persisted in localStorage
+let unclearInstructors   = {};  // email → { name, students: [] } — built fresh each ZIP load
 
 // ══════════════════════════════════════════════════
 // INIT
@@ -685,7 +697,8 @@ function saveToLocalStorage() {
       savedAt: new Date().toISOString(),
       records: allRecords.filter(r => !r.removed),
       dismissed: [...dismissedRemoved],
-      examTypes
+      examTypes,
+      notifiedInstructors
     };
     localStorage.setItem(LS_KEY, JSON.stringify(payload));
   } catch(e) { console.warn('localStorage save failed:', e); }
@@ -830,6 +843,7 @@ function clearHistory() {
   allRecords = [];
   dismissedRemoved = new Set();
   examTypes = {};
+  unclearInstructors = {};
   uploadCount = { approved: 0, pending: 0 };
   const notice = document.getElementById('sessionNotice');
   if (notice) notice.style.display = 'none';
@@ -851,6 +865,7 @@ function restoreSessionBaseline() {
   allRecords = saved.records.map(r => ({ ...r, removed: false, conflict: false, conflictWith: [] }));
   dismissedRemoved = new Set(saved.dismissed || []);
   examTypes = saved.examTypes || {};
+  notifiedInstructors = saved.notifiedInstructors || {};
 
   // Show a subtle restore notice
   const notice = document.getElementById('sessionNotice');
@@ -928,6 +943,7 @@ function refreshUI() {
   renderGrid();
   renderNeedsTypeSidebar();
   renderOnlineStudentsList();
+  renderUnclearInstructorsSidebar();
   document.getElementById('exportBtn').disabled = allRecords.length === 0;
   const etb = document.getElementById('exportTypeBtn');
   if (etb) etb.disabled = allRecords.length === 0;
@@ -1745,6 +1761,9 @@ async function handlePdfZip(file) {
     const pdfFiles = Object.values(zip.files).filter(f => !f.dir && f.name.toLowerCase().endsWith('.pdf'));
     if (!pdfFiles.length) { showNotif('No PDFs found in zip.'); prog.style.display='none'; return; }
 
+    // Reset unclear instructors for this fresh ZIP load
+    unclearInstructors = {};
+
     let setCount = 0, skippedPaper = 0, skippedUnknown = 0, noMatch = 0;
     const skippedNames = [];
     const noMatchNames = [];
@@ -1785,6 +1804,16 @@ async function handlePdfZip(file) {
       } else {
         skippedUnknown++;
         noMatchNames.push((studentName || fname) + ' (format unclear)');
+        // Try to extract instructor info from this PDF's cover sheet
+        const instrInfo = extractInstructorInfo(text);
+        if (instrInfo && instrInfo.email) {
+          if (!unclearInstructors[instrInfo.email]) {
+            unclearInstructors[instrInfo.email] = { name: instrInfo.name, email: instrInfo.email, students: [] };
+          }
+          if (studentName && !unclearInstructors[instrInfo.email].students.includes(studentName)) {
+            unclearInstructors[instrInfo.email].students.push(studentName);
+          }
+        }
       }
     }
 
@@ -1796,6 +1825,7 @@ async function handlePdfZip(file) {
     renderGrid();
     renderNeedsTypeSidebar();
     renderOnlineStudentsList();
+    renderUnclearInstructorsSidebar();
 
     // Show summary
     summary.style.display = 'block';
@@ -1876,6 +1906,168 @@ function detectExamFormat(text) {
   }
 
   return 'unknown';
+}
+
+// ── Instructor email extraction ──────────────────────────────────────────────
+function extractInstructorInfo(text) {
+  // PDF cover sheet format:  "Name: Kenneth McKenna kmckenn2@highpoint.edu"
+  // email regex
+  const emailRe = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
+  // Find "Name:" label (case-insensitive, allow extra spaces)
+  const nameMatch = text.match(/Name\s*:\s*(.+)/i);
+  if (!nameMatch) return null;
+  const segment = nameMatch[1].trim();
+  const emailMatch = segment.match(emailRe);
+  if (!emailMatch) return null;
+  const email = emailMatch[0].toLowerCase().trim();
+  // Name is everything before the email in the segment
+  const name = segment.slice(0, segment.indexOf(emailMatch[0])).trim() || 'Unknown';
+  return { name, email };
+}
+
+function renderUnclearInstructorsSidebar() {
+  const sec   = document.getElementById('unclearInstructorsSec');
+  const list  = document.getElementById('unclearInstructorsList');
+  const count = document.getElementById('unclearInstructorsCount');
+  const emails = Object.keys(unclearInstructors);
+  if (!emails.length) { sec.style.display = 'none'; return; }
+  sec.style.display = 'block';
+
+  const newOnes  = emails.filter(e => !notifiedInstructors[e]);
+  const prevOnes = emails.filter(e =>  notifiedInstructors[e]);
+
+  count.textContent = `${emails.length} instructor${emails.length!==1?'s':''}`;
+
+  let html = '';
+  if (newOnes.length) {
+    html += `<div style="font-size:9px;font-weight:700;color:#b85c00;font-family:var(--mono);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">New (${newOnes.length})</div>`;
+    newOnes.forEach(e => {
+      const info = unclearInstructors[e];
+      html += `<div style="padding:3px 0;border-bottom:1px solid var(--border2)">
+        <div style="font-size:10px;font-weight:600">${escH(info.name)}</div>
+        <div style="font-size:9px;font-family:var(--mono);color:var(--muted)">${escH(e)}</div>
+        <div style="font-size:9px;color:var(--muted)">${info.students.length} student${info.students.length!==1?'s':''}</div>
+      </div>`;
+    });
+  }
+  if (prevOnes.length) {
+    html += `<div style="font-size:9px;font-weight:700;color:var(--muted);font-family:var(--mono);text-transform:uppercase;letter-spacing:.5px;margin-top:6px;margin-bottom:4px">Previously Exported (${prevOnes.length})</div>`;
+    prevOnes.forEach(e => {
+      const info = unclearInstructors[e];
+      const ni   = notifiedInstructors[e];
+      html += `<div style="padding:3px 0;border-bottom:1px solid var(--border2);opacity:0.65">
+        <div style="font-size:10px;font-weight:600">${escH(info.name)}</div>
+        <div style="font-size:9px;font-family:var(--mono);color:var(--muted)">${escH(e)}</div>
+        <div style="font-size:9px;color:var(--muted)">Exported ${new Date(ni.firstSeen).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</div>
+      </div>`;
+    });
+  }
+  list.innerHTML = html;
+
+  // Show/hide export button based on new ones
+  document.getElementById('exportUnclearBtn').style.opacity = newOnes.length ? '1' : '0.4';
+}
+
+async function exportUnclearInstructorsDoc() {
+  const newEmails = Object.keys(unclearInstructors).filter(e => !notifiedInstructors[e]);
+  const allEmails = Object.keys(unclearInstructors);
+  if (!allEmails.length) { showNotif('No unclear instructors found.'); return; }
+
+  const now = new Date().toISOString();
+  const emailListNew  = newEmails.map(e => unclearInstructors[e].email || e);
+  const emailListAll  = allEmails.map(e => unclearInstructors[e].email || e);
+
+  // Build Word doc XML
+  const makeRow = (label, emails) => {
+    if (!emails.length) return '';
+    return `
+      <w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>${escXml(label)}</w:t></w:r></w:p>
+      ${emails.map(e => `<w:p><w:r><w:rPr><w:rFonts w:ascii="Courier New" w:hAnsi="Courier New"/><w:sz w:val="20"/></w:rPr><w:t>${escXml(e)}</w:t></w:r></w:p>`).join('')}
+      <w:p><w:r><w:t> </w:t></w:r></w:p>`;
+  };
+
+  const dateLabel = new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
+  const body = `
+    <w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>Unclear Format — Instructor Emails</w:t></w:r></w:p>
+    <w:p><w:r><w:rPr><w:color w:val="888888"/><w:sz w:val="18"/></w:rPr><w:t>Generated ${escXml(dateLabel)}</w:t></w:r></w:p>
+    <w:p><w:r><w:t> </w:t></w:r></w:p>
+    ${makeRow('New — Not Yet Emailed', emailListNew)}
+    ${makeRow('Previously Exported', allEmails.filter(e => notifiedInstructors[e]).map(e => unclearInstructors[e].email || e))}
+  `;
+
+  const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
+  xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>${body}<w:sectPr/></w:body></w:document>`;
+
+  const relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+
+  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/><w:pPr/><w:rPr><w:sz w:val="22"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/>
+    <w:rPr><w:b/><w:sz w:val="36"/><w:color w:val="1a1f2e"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/>
+    <w:pPr><w:spacing w:before="240" w:after="60"/></w:pPr>
+    <w:rPr><w:b/><w:sz w:val="24"/><w:color w:val="B85C00"/></w:rPr></w:style>
+</w:styles>`;
+
+  const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+
+  const rootRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+
+  try {
+    const zip = new JSZip();
+    zip.file('[Content_Types].xml', contentTypesXml);
+    zip.file('_rels/.rels', rootRelsXml);
+    zip.file('word/document.xml', docXml);
+    zip.file('word/styles.xml', stylesXml);
+    zip.file('word/_rels/document.xml.rels', relsXml);
+
+    const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `instructor_emails_${new Date().toISOString().slice(0,10)}.docx`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    // Mark new ones as notified
+    newEmails.forEach(e => {
+      notifiedInstructors[e] = { name: unclearInstructors[e].name, firstSeen: now };
+    });
+    saveToLocalStorage();
+    renderUnclearInstructorsSidebar();
+    showNotif(`Exported ${emailListAll.length} email${emailListAll.length!==1?'s':''}. ${newEmails.length} marked as notified.`);
+  } catch(e) {
+    console.error('Export error:', e);
+    showNotif('Export failed: ' + e.message);
+  }
+}
+
+function escXml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');
+}
+
+function clearEmailHistory() {
+  if (!Object.keys(notifiedInstructors).length) { showNotif('No email history to clear.'); return; }
+  notifiedInstructors = {};
+  saveToLocalStorage();
+  renderUnclearInstructorsSidebar();
+  showNotif('Email history cleared. All instructors will appear as New on next export.');
 }
 
 function findRecord(studentName, dateStr, startHour, startMin) {
