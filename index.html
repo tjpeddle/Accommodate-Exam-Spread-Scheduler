@@ -357,14 +357,13 @@ table.sched td.office-cell { background: #fafbff; }
     <button onclick="clearEmailHistory()" style="margin-top:5px;width:100%;padding:5px;background:transparent;border:1px solid var(--border2);border-radius:6px;color:var(--muted);font-size:10px;cursor:pointer;font-family:var(--mono)" onmouseover="this.style.borderColor='#c0281a';this.style.color='#c0281a'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--muted)'">↺ Clear Email History</button>
   </div>
 
-  <div class="sb-sec" id="instructorExcelSec" style="display:none">
+  <div class="sb-sec" id="instructorTrackerSec" style="display:none">
     <div class="sb-title" style="display:flex;justify-content:space-between;align-items:center">
-      <span>Instructor List Export</span>
-      <span id="instructorExcelCount" style="font-size:10px;color:var(--muted);font-family:var(--mono)"></span>
+      <span>Instructor Responses</span>
+      <span id="instructorTrackerCount" style="font-size:10px;color:var(--muted);font-family:var(--mono)"></span>
     </div>
-    <div style="font-size:10px;color:var(--muted);margin-bottom:6px">Accumulates across both ZIPs — load Approved then Pending before exporting.</div>
-    <button onclick="exportInstructorExcel()" style="width:100%;padding:6px 10px;background:#1a7a4a;color:#fff;border:none;border-radius:6px;font-family:var(--mono);font-size:10px;font-weight:700;cursor:pointer;letter-spacing:.5px;text-transform:uppercase">⬇ Export Excel</button>
-    <button onclick="allInstructorRows=[];document.getElementById('instructorExcelSec').style.display='none';showNotif('Instructor list cleared.')" style="margin-top:5px;width:100%;padding:5px;background:transparent;border:1px solid var(--border2);border-radius:6px;color:var(--muted);font-size:10px;cursor:pointer;font-family:var(--mono)" onmouseover="this.style.borderColor='#c0281a';this.style.color='#c0281a'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--muted)'">↺ Clear List</button>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:6px">Record what each instructor replies — paper or online, and minutes.</div>
+    <button onclick="openInstructorPanel()" style="width:100%;padding:7px 10px;background:var(--accent);color:#fff;border:none;border-radius:6px;font-family:var(--mono);font-size:10px;font-weight:700;cursor:pointer;letter-spacing:.5px;text-transform:uppercase">📋 Open Instructor List</button>
   </div>
 
   <div class="sb-sec">
@@ -455,6 +454,37 @@ table.sched td.office-cell { background: #fafbff; }
     <div id="summaryContent"></div>
     <div style="margin-top:16px;font-family:var(--mono);font-size:10px;color:var(--muted);border-top:1px solid var(--border);padding-top:10px" id="summaryTotal"></div>
   </div>
+  <!-- Instructor Response Tracker -->
+  <div id="instructorOverlay" onclick="closeInstructorPanel()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:910;"></div>
+  <div id="instructorPanel" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:911;
+    background:var(--surface);border:1px solid var(--border);border-radius:12px;
+    width:94vw;max-width:1080px;height:86vh;box-shadow:0 8px 32px rgba(0,0,0,0.18);
+    flex-direction:column;overflow:hidden">
+
+    <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-shrink:0">
+      <div style="font-family:var(--mono);font-size:13px;font-weight:700;color:var(--accent);letter-spacing:.5px;text-transform:uppercase">📋 Instructor Responses</div>
+      <div id="instructorPanelStats" style="font-family:var(--mono);font-size:10px;color:var(--muted)"></div>
+      <span onclick="closeInstructorPanel()" style="margin-left:auto;cursor:pointer;font-size:18px;color:var(--muted);line-height:1" title="Close">✕</span>
+    </div>
+
+    <div style="padding:10px 20px;border-bottom:1px solid var(--border2);display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex-shrink:0">
+      <input id="rosterSearchBox" oninput="setRosterSearch(this.value)" placeholder="Search name, email or course..."
+        style="flex:1;min-width:200px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-family:var(--sans);font-size:12px;background:var(--surface);color:var(--text)">
+      <button id="rf_all"  onclick="setRosterFilter('all')"  style="padding:5px 11px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;font-family:var(--mono);font-size:9px;font-weight:700;cursor:pointer;letter-spacing:.4px;text-transform:uppercase">All</button>
+      <button id="rf_need" onclick="setRosterFilter('need')" style="padding:5px 11px;border:1px solid var(--border);background:transparent;color:var(--muted);border-radius:6px;font-family:var(--mono);font-size:9px;font-weight:700;cursor:pointer;letter-spacing:.4px;text-transform:uppercase">Still Needed</button>
+      <button id="rf_done" onclick="setRosterFilter('done')" style="padding:5px 11px;border:1px solid var(--border);background:transparent;color:var(--muted);border-radius:6px;font-family:var(--mono);font-size:9px;font-weight:700;cursor:pointer;letter-spacing:.4px;text-transform:uppercase">Complete</button>
+    </div>
+
+    <div id="instructorPanelBody" style="flex:1;overflow:auto;padding:0 8px"></div>
+
+    <div style="padding:10px 20px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-shrink:0">
+      <button onclick="addRosterRow()" style="padding:6px 12px;border:1px solid var(--border);background:transparent;color:var(--text);border-radius:6px;font-family:var(--mono);font-size:10px;cursor:pointer">+ Add Course Row</button>
+      <div style="font-size:10px;color:var(--muted);margin-left:auto">Saved automatically · persists between sessions</div>
+      <button onclick="clearRosterResponses()" style="padding:6px 12px;border:1px solid var(--border2);background:transparent;color:var(--muted);border-radius:6px;font-family:var(--mono);font-size:10px;cursor:pointer">Clear Responses</button>
+      <button onclick="resetRoster()" style="padding:6px 12px;border:1px solid var(--border2);background:transparent;color:var(--muted);border-radius:6px;font-family:var(--mono);font-size:10px;cursor:pointer" onmouseover="this.style.borderColor='#c0281a';this.style.color='#c0281a'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--muted)'">Reset List</button>
+    </div>
+  </div>
+
   <div class="table-area">
     <div class="empty-state" id="emptyState">
       <div class="empty-icon">📋</div>
@@ -524,7 +554,11 @@ let dismissedRemoved = new Set(); // student|date keys dismissed by user
 let examTypes = {};  // key: student|date|slot → 'paper'|'online'
 let notifiedInstructors = {};  // email → { name, firstSeen: ISO date } — persisted in localStorage
 let unclearInstructors   = {};  // email → { name, students: [] } — built fresh each ZIP load
-let allInstructorRows    = [];  // { name, email, classLength, format, student } — built fresh each ZIP load, for Excel export
+let allInstructorRows    = [];  // { name, email, course, classLength, format } — rebuilt each ZIP load
+// Instructor response tracker. Key is email||originalCourse so a row keeps its
+// identity even after the course text is edited by hand. PERSISTED, because the
+// replies trickle in over days and must survive reloads and new ZIP loads.
+let instructorRoster     = {};  // key → { name, email, course, format, length, note, updated }
 
 // ══════════════════════════════════════════════════
 // INIT
@@ -532,6 +566,7 @@ let allInstructorRows    = [];  // { name, email, classLength, format, student }
 document.addEventListener('DOMContentLoaded', () => {
   renderOfficeList();
   restoreSessionBaseline();
+  renderInstructorSidebar();   // recorded replies show up without reloading files
 });
 
 // ══════════════════════════════════════════════════
@@ -709,7 +744,8 @@ function saveToLocalStorage() {
       records: allRecords.filter(r => !r.removed),
       dismissed: [...dismissedRemoved],
       examTypes,
-      notifiedInstructors
+      notifiedInstructors,
+      instructorRoster
     };
     localStorage.setItem(LS_KEY, JSON.stringify(payload));
   } catch(e) { console.warn('localStorage save failed:', e); }
@@ -846,6 +882,7 @@ function dismissAllRemoved() {
   updateStats();
   renderGrid();
   renderNeedsTypeSidebar();
+  renderInstructorSidebar();   // saved responses survive a reload
 }
 
 function clearHistory() {
@@ -855,7 +892,10 @@ function clearHistory() {
   dismissedRemoved = new Set();
   examTypes = {};
   unclearInstructors = {};
+  instructorRoster = {};
+  allInstructorRows = [];
   uploadCount = { approved: 0, pending: 0 };
+  renderInstructorSidebar();
   const notice = document.getElementById('sessionNotice');
   if (notice) notice.style.display = 'none';
   refreshUI();
@@ -863,7 +903,15 @@ function clearHistory() {
 
 function restoreSessionBaseline() {
   const saved = loadFromLocalStorage();
-  if (!saved || !saved.records || !saved.records.length) return;
+  if (!saved) return;
+
+  // The instructor tracker and the email history are independent of the
+  // schedule grid: replies arrive over weeks, so restore them even when no
+  // records were saved and regardless of the 14-day baseline valve below.
+  instructorRoster    = saved.instructorRoster    || {};
+  notifiedInstructors = saved.notifiedInstructors || {};
+
+  if (!saved.records || !saved.records.length) return;
 
   const savedDate = new Date(saved.savedAt);
   const today = new Date();
@@ -876,7 +924,6 @@ function restoreSessionBaseline() {
   allRecords = saved.records.map(r => ({ ...r, removed: false, conflict: false, conflictWith: [] }));
   dismissedRemoved = new Set(saved.dismissed || []);
   examTypes = saved.examTypes || {};
-  notifiedInstructors = saved.notifiedInstructors || {};
 
   // Show a subtle restore notice
   const notice = document.getElementById('sessionNotice');
@@ -1869,21 +1916,9 @@ async function handlePdfZip(file) {
     renderNeedsTypeSidebar();
     renderOnlineStudentsList();
     renderUnclearInstructorsSidebar();
-    const excelSec = document.getElementById('instructorExcelSec');
-    if (excelSec) {
-      excelSec.style.display = allInstructorRows.length ? 'block' : 'none';
-      const excelCnt = document.getElementById('instructorExcelCount');
-      if (excelCnt) {
-        // Cover sheets collected vs. the instructor+course rows that will export
-        // Cover sheets collected -> instructor/course rows, plus how many
-        // bookings are still waiting on exam details from the instructor.
-        const n = allInstructorRows.length;
-        const ok = allInstructorRows.filter(r => ((r.name && r.name !== 'Unknown') || r.email) && r.examSubmitted !== false);
-        const uniq = new Set(ok.map(r => (r.email || r.name || '').toLowerCase() + '||' + (r.course || '').toLowerCase())).size;
-        const waiting = allInstructorRows.filter(r => r.examSubmitted === false).length;
-        excelCnt.textContent = n + ' sheets → ' + uniq + ' rows' + (waiting ? ' · ' + waiting + ' awaiting' : '');
-      }
-    }
+    // Fold these cover sheets into the instructor response tracker
+    mergeRosterFromSheets();
+    renderInstructorSidebar();
 
     // Show summary
     summary.style.display = 'block';
@@ -2306,115 +2341,218 @@ function clearEmailHistory() {
   showNotif('Email history cleared. All instructors will appear as New on next export.');
 }
 
-function exportInstructorExcel() {
-  if (!allInstructorRows.length) { showNotif('No instructor data — load a ZIP first.'); return; }
+// ══════════════════════════════════════════════════
+// INSTRUCTOR RESPONSE TRACKER
+// Instructors reply to the notification email with "paper or online" and how
+// many minutes the class gets. Those replies are recorded here, in the app.
+// ══════════════════════════════════════════════════
+function rosterKey(email, course) {
+  return (email || '').toLowerCase() + '||' + (course || '').toLowerCase();
+}
 
-  // Drop rows where no instructor could be identified at all
-  const usable = allInstructorRows.filter(r => (r.name && r.name !== 'Unknown') || r.email);
-  if (!usable.length) { showNotif('No instructor names or emails could be read from those cover sheets.'); return; }
-
-  // Split by whether the instructor has actually submitted the exam details.
-  // A sheet with an empty "Exam Information" section has no course to report, so
-  // listing it beside real courses would just be a row of blanks.
-  const submitted = usable.filter(r => r.examSubmitted !== false);
-  const awaiting  = usable.filter(r => r.examSubmitted === false);
-
-  // One row per instructor per course — a ZIP holds one cover sheet per student,
-  // so several students in the same section would otherwise repeat the same row.
-  // An instructor teaching 2-3 courses/sections still gets a row for each.
-  const byKey = new Map();
-  submitted.forEach(r => {
-    const who = (r.email || r.name || '').toLowerCase();
-    const key = who + '||' + (r.course || '').toLowerCase();
-    const prev = byKey.get(key);
-    if (!prev) {
-      byKey.set(key, {
-        name: r.name || '',
-        email: r.email || '',
-        course: r.course || '',
-        classLength: r.classLength,
-        formats: new Set(r.format ? [r.format] : [])
-      });
-      return;
+// Fold the cover sheets just parsed into the roster. Never clobbers a value a
+// person typed — parsed data only fills blanks.
+function mergeRosterFromSheets() {
+  allInstructorRows.forEach(r => {
+    if (!r.email && !r.name) return;
+    const key = rosterKey(r.email || r.name, r.course);
+    let row = instructorRoster[key];
+    if (!row) {
+      row = instructorRoster[key] = {
+        name: r.name || '', email: r.email || '', course: r.course || '',
+        format: '', length: null, note: '', updated: ''
+      };
     }
-    // Fill in anything the first sheet for this course didn't carry
-    if (!prev.name  && r.name)  prev.name  = r.name;
-    if (!prev.email && r.email) prev.email = r.email;
-    if (prev.classLength == null && r.classLength != null) prev.classLength = r.classLength;
-    if (r.format) prev.formats.add(r.format);
+    if (!row.name  && r.name)  row.name  = r.name;
+    if (!row.email && r.email) row.email = r.email;
+    if (!row.course && r.course) row.course = r.course;
+    // A format or length read off the cover sheet is a starting value only —
+    // a reply the user has already recorded always wins.
+    if (!row.format && (r.format === 'Paper' || r.format === 'Online')) row.format = r.format;
+    if (row.length == null && r.classLength != null) row.length = r.classLength;
+    row.bookings = (row.bookings || 0) + 1;
+  });
+  saveToLocalStorage();
+}
+
+function rosterRows() {
+  return Object.keys(instructorRoster).map(k => Object.assign({ key: k }, instructorRoster[k]));
+}
+
+function rosterIsComplete(r) {
+  return !!(r.format && r.length != null && r.length !== '');
+}
+
+function openInstructorPanel() {
+  if (!Object.keys(instructorRoster).length) {
+    showNotif('No instructors yet — load a ZIP first.');
+    return;
+  }
+  document.getElementById('instructorOverlay').style.display = 'block';
+  document.getElementById('instructorPanel').style.display   = 'flex';
+  renderInstructorPanel();
+}
+
+function closeInstructorPanel() {
+  document.getElementById('instructorOverlay').style.display = 'none';
+  document.getElementById('instructorPanel').style.display   = 'none';
+}
+
+let rosterFilter = 'all';
+let rosterSearch = '';
+
+function setRosterFilter(f) { rosterFilter = f; renderInstructorPanel(); }
+function setRosterSearch(v) { rosterSearch = (v || '').toLowerCase().trim(); renderInstructorPanel(); }
+
+function renderInstructorPanel() {
+  const body  = document.getElementById('instructorPanelBody');
+  const stats = document.getElementById('instructorPanelStats');
+  if (!body) return;
+
+  const all   = rosterRows();
+  const done  = all.filter(rosterIsComplete).length;
+
+  let rows = all;
+  if (rosterFilter === 'need') rows = rows.filter(r => !rosterIsComplete(r));
+  if (rosterFilter === 'done') rows = rows.filter(rosterIsComplete);
+  if (rosterSearch) rows = rows.filter(r =>
+    (r.name || '').toLowerCase().includes(rosterSearch) ||
+    (r.email || '').toLowerCase().includes(rosterSearch) ||
+    (r.course || '').toLowerCase().includes(rosterSearch));
+
+  rows.sort((a, b) =>
+    lastNameKey(a.name || a.email).localeCompare(lastNameKey(b.name || b.email)) ||
+    (a.course || '').localeCompare(b.course || ''));
+
+  stats.textContent = `${done} of ${all.length} complete · ${all.length - done} still needed`;
+
+  // Toggle button states
+  ['all','need','done'].forEach(f => {
+    const b = document.getElementById('rf_' + f);
+    if (!b) return;
+    const on = rosterFilter === f;
+    b.style.background  = on ? 'var(--accent)' : 'transparent';
+    b.style.color       = on ? '#fff' : 'var(--muted)';
+    b.style.borderColor = on ? 'var(--accent)' : 'var(--border)';
   });
 
-  // Sort A-Z by LAST name, then by course within one instructor
-  // (fall back to the email when no name parsed, so those rows still sort sensibly)
-  const sortKey = r => (r.name && r.name !== 'Unknown')
-    ? lastNameKey(r.name)
-    : (r.email || '').toLowerCase();
-  const sorted = [...byKey.values()].sort((a, b) =>
-    sortKey(a).localeCompare(sortKey(b)) ||
-    (a.course || '').toLowerCase().localeCompare((b.course || '').toLowerCase())
-  );
-
-  // Build worksheet rows
-  const wsData = [
-    ['Instructor Name', 'Email', 'Course', 'Class Length (min)', 'Exam Format']
-  ];
-  sorted.forEach(r => {
-    // If sheets for one course disagree, show both rather than silently picking one
-    const fmts = [...r.formats].filter(f => f !== 'Unclear');
-    const fmt  = fmts.length ? fmts.sort().join(' / ') : (r.formats.size ? 'Unclear' : '');
-    wsData.push([
-      r.name || '',
-      r.email || '',
-      r.course || '',
-      r.classLength != null ? r.classLength : '',
-      fmt
-    ]);
-  });
-
-  const ws = XLSX.utils.aoa_to_sheet(wsData);
-
-  // Column widths
-  ws['!cols'] = [
-    { wch: 24 }, // Name
-    { wch: 30 }, // Email
-    { wch: 42 }, // Course
-    { wch: 20 }, // Class Length
-    { wch: 16 }  // Format
-  ];
-
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Instructors');
-
-  // Second tab: instructors who haven't submitted exam details yet. These are
-  // the people to chase, one row each, with how many bookings are waiting.
-  if (awaiting.length) {
-    const wait = new Map();
-    awaiting.forEach(r => {
-      const key = (r.email || r.name || '').toLowerCase();
-      const prev = wait.get(key);
-      if (!prev) { wait.set(key, { name: r.name || '', email: r.email || '', count: 1, files: [r.file || ''] }); return; }
-      prev.count++;
-      if (!prev.name && r.name) prev.name = r.name;
-      if (prev.files.length < 12 && r.file) prev.files.push(r.file);
-    });
-    const wsorted = [...wait.values()].sort((x, y) =>
-      (x.name ? lastNameKey(x.name) : (x.email || '')).localeCompare(y.name ? lastNameKey(y.name) : (y.email || '')));
-
-    const rv = [['Instructor Name', 'Email', 'Bookings Awaiting', 'Example Booking(s)']];
-    wsorted.forEach(w => rv.push([w.name, w.email, w.count, w.files.slice(0, 4).join('; ')]));
-    const ws2 = XLSX.utils.aoa_to_sheet(rv);
-    ws2['!cols'] = [{ wch: 24 }, { wch: 30 }, { wch: 18 }, { wch: 60 }];
-    XLSX.utils.book_append_sheet(wb, ws2, 'Awaiting Exam Info');
+  if (!rows.length) {
+    body.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted);font-size:12px">No instructors match this filter.</div>';
+    return;
   }
 
-  XLSX.writeFile(wb, `instructor_list_${new Date().toISOString().slice(0,10)}.xlsx`);
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+    '<thead><tr style="position:sticky;top:0;background:var(--surface);z-index:2">' +
+    ['Instructor','Email','Course','Format','Minutes',''].map((h,i) =>
+      `<th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);font-weight:600${i===5?';width:30px':''}">${h}</th>`
+    ).join('') + '</tr></thead><tbody>';
 
-  // Say plainly when a cover sheet's course couldn't be read, rather than
-  // leaving a silently blank cell in the spreadsheet.
-  showNotif(
-    `Exported ${sorted.length} instructor/course row${sorted.length !== 1 ? 's' : ''} from ${allInstructorRows.length} cover sheets.` +
-    (awaiting.length ? ` ${awaiting.length} booking${awaiting.length !== 1 ? 's have' : ' has'} no exam info yet — see the "Awaiting Exam Info" tab.` : '')
-  );
+  rows.forEach(r => {
+    const k    = r.key.replace(/"/g, '&quot;');
+    const ok   = rosterIsComplete(r);
+    const tint = ok ? 'var(--green-bg)' : 'transparent';
+    const btn  = (val, label) => {
+      const on = r.format === val;
+      return `<button onclick="setRosterFormat('${k}','${val}')" style="padding:3px 9px;margin-right:4px;border-radius:5px;cursor:pointer;
+        font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;
+        border:1px solid ${on ? 'transparent' : 'var(--border)'};
+        background:${on ? (val==='Paper' ? 'var(--orange)' : 'var(--accent)') : 'transparent'};
+        color:${on ? '#fff' : 'var(--muted)'}">${label}</button>`;
+    };
+    html += `<tr style="background:${tint};border-bottom:1px solid var(--border2)">
+      <td style="padding:7px 10px;font-weight:600">${escHtml(r.name || '—')}</td>
+      <td style="padding:7px 10px;font-family:var(--mono);font-size:10px;color:var(--muted)">${escHtml(r.email || '')}</td>
+      <td style="padding:7px 10px">
+        <input value="${escHtml(r.course || '')}" placeholder="course / section"
+          onchange="setRosterField('${k}','course',this.value)"
+          style="width:100%;min-width:170px;padding:4px 6px;border:1px solid var(--border2);border-radius:5px;font-family:var(--sans);font-size:11px;background:var(--surface);color:var(--text)">
+      </td>
+      <td style="padding:7px 10px;white-space:nowrap">${btn('Paper','Paper')}${btn('Online','Online')}</td>
+      <td style="padding:7px 10px">
+        <input type="number" min="0" step="5" value="${r.length != null ? r.length : ''}" placeholder="min"
+          onchange="setRosterField('${k}','length',this.value)"
+          style="width:72px;padding:4px 6px;border:1px solid var(--border2);border-radius:5px;font-family:var(--mono);font-size:11px;background:var(--surface);color:var(--text)">
+      </td>
+      <td style="padding:7px 6px;text-align:center">${ok ? '<span style="color:var(--green);font-size:13px" title="Complete">✓</span>' : ''}</td>
+    </tr>`;
+  });
+  body.innerHTML = html + '</tbody></table>';
+}
+
+function setRosterFormat(key, val) {
+  const r = instructorRoster[key];
+  if (!r) return;
+  r.format  = (r.format === val) ? '' : val;   // click again to clear
+  r.updated = new Date().toISOString();
+  saveToLocalStorage();
+  renderInstructorPanel();
+  renderInstructorSidebar();
+}
+
+function setRosterField(key, field, val) {
+  const r = instructorRoster[key];
+  if (!r) return;
+  if (field === 'length') {
+    const n = parseInt(val, 10);
+    r.length = (val === '' || isNaN(n)) ? null : n;
+  } else {
+    r[field] = val;
+  }
+  r.updated = new Date().toISOString();
+  saveToLocalStorage();
+  renderInstructorPanel();
+  renderInstructorSidebar();
+}
+
+function addRosterRow() {
+  const email = prompt('Instructor email for the new row:');
+  if (!email) return;
+  const existing = rosterRows().find(r => (r.email || '').toLowerCase() === email.toLowerCase());
+  let i = 2, key = rosterKey(email, 'new ' + i);
+  while (instructorRoster[key]) { i++; key = rosterKey(email, 'new ' + i); }
+  instructorRoster[key] = {
+    name: existing ? existing.name : '', email: email.toLowerCase(),
+    course: '', format: '', length: null, note: '', updated: new Date().toISOString()
+  };
+  saveToLocalStorage();
+  renderInstructorPanel();
+  renderInstructorSidebar();
+}
+
+function clearRosterResponses() {
+  if (!confirm('Clear the format and minutes you have recorded for every instructor?\n\nThe instructor list itself stays.')) return;
+  Object.values(instructorRoster).forEach(r => { r.format = ''; r.length = null; r.updated = ''; });
+  saveToLocalStorage();
+  renderInstructorPanel();
+  renderInstructorSidebar();
+  showNotif('Recorded responses cleared.');
+}
+
+function resetRoster() {
+  if (!confirm('Remove every instructor from the tracker, including recorded responses?')) return;
+  instructorRoster = {};
+  saveToLocalStorage();
+  closeInstructorPanel();
+  renderInstructorSidebar();
+  showNotif('Instructor tracker reset.');
+}
+
+function escHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function renderInstructorSidebar() {
+  const sec = document.getElementById('instructorTrackerSec');
+  if (!sec) return;
+  const all = rosterRows();
+  sec.style.display = all.length ? 'block' : 'none';
+  const cnt = document.getElementById('instructorTrackerCount');
+  if (cnt) {
+    const done = all.filter(rosterIsComplete).length;
+    cnt.textContent = done + '/' + all.length + ' complete';
+  }
 }
 
 function findRecord(studentName, dateStr, startHour, startMin) {
