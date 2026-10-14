@@ -1968,42 +1968,49 @@ function extractClassLength(text) {
 }
 
 function extractCourse(text) {
-  // Cover sheets write the course as "Course: <title> (DEPT-NUM-SEC) (DEPT-NUM-SEC)",
-  // sometimes labeled "Course (Object):", "Course Name:" or "Class:", and sometimes
-  // with no colon at all. The section code is printed twice — collapse it to one.
-  // The title itself may contain a colon ("Nutrition: Hlth Scnc Prfssn").
+  // Spec: the course comes from the cover sheet's "Exam Information" section,
+  // from the field labeled "Course:" (older sheets label it "Course (Object):").
+  // The value reads "<title> (DEPT-NUM-SEC) (DEPT-NUM-SEC)" with the section
+  // code printed twice — collapse it to one. The title may itself contain a
+  // colon ("Nutrition: Hlth Scnc Prfssn").
   if (!text) return null;
-  const CODE = '[A-Za-z]{2,6}-\\d{3,4}[A-Za-z]?(?:-\\d{1,3}[A-Za-z]?)?';
-  const STOP = '(?:Title|Notes?|Final\\s+Exam|Description|Allowances|Faculty|Exam\\s+Information|Memory\\s+Aid|Instructor|What\\s+is)';
-  const clean = s => s.replace(/\s+/g, ' ').trim().replace(/[:,;\-–—.]+$/, '').trim();
+  const CODE  = '[A-Za-z]{2,6}-\\d{3,4}[A-Za-z]?(?:-\\d{1,3}[A-Za-z]?)?';
+  const STOP  = '(?:Title|Notes?|Final\\s+Exam|Description|Allowances|Faculty|Memory\\s+Aid|What\\s+is)';
+  const clean = s => s.replace(/\s+/g, ' ').trim().replace(/[:,;\-\u2013\u2014.]+$/, '').trim();
+  const label = /\bCourse\b(?:\s*\(\s*Object\s*\))?(\s*:)?\s*/gi;
 
-  const label = /\b(?:Course|Class)\b(?:\s*\(\s*Object\s*\))?(?:\s+Name)?(\s*:)?\s*/gi;
-  let m, noCodeTitle = null;
+  const withCode = [], titleOnly = [];
+  let m;
   while ((m = label.exec(text)) !== null) {
     const hadColon = !!m[1];
     const rest = text.slice(m.index + m[0].length, m.index + m[0].length + 200);
 
-    // (a) Best case: "<title> (DEPT-NUM-SEC)". The title must not run through a
-    //     parenthetical, which keeps the match inside a single field.
-    const hit = rest.match(new RegExp('^([^()]{2,90}?)\\s*\\((' + CODE + ')\\)'));
-    if (hit && /^[A-Za-z0-9]/.test(hit[1].trim())) {
-      const t = clean(hit[1]);
-      if (t) return t + ' (' + hit[2].toUpperCase() + ')';
+    // "<title> (DEPT-NUM-SEC)" — the title must not run through a parenthetical,
+    // which keeps the match inside this one field.
+    const h = rest.match(new RegExp('^([^()]{2,90}?)\\s*\\((' + CODE + ')\\)'));
+    if (h && /^[A-Za-z0-9]/.test(h[1].trim())) {
+      const t = clean(h[1]);
+      if (t) { withCode.push({ at: m.index, value: t + ' (' + h[2].toUpperCase() + ')' }); continue; }
     }
-
-    // (b) No section code printed: take the title up to the next field label.
-    //     Only trusted when the label actually carried a colon, so prose such as
-    //     "...and of the course. Final Exam No" can't be mistaken for the field.
-    if (hadColon && !noCodeTitle) {
+    // Same field but no section code printed: take the title up to the next
+    // label. Requires a real colon, so prose like "...and of the course. Final
+    // Exam No" can never be mistaken for the field.
+    if (hadColon) {
       const h2 = rest.match(new RegExp('^([A-Za-z0-9][^()]{1,89}?)\\s+' + STOP + '\\b', 'i'));
-      if (h2) { const t = clean(h2[1]); if (t && t.length > 2) noCodeTitle = t; }
+      if (h2) { const t = clean(h2[1]); if (t && t.length > 2) titleOnly.push({ at: m.index, value: t }); }
     }
   }
-  if (noCodeTitle) return noCodeTitle;
 
-  // (c) Last resort: a bare section code anywhere on the sheet
-  const bare = text.match(new RegExp('\\((' + CODE + ')\\)'));
-  return bare ? bare[1].toUpperCase() : null;
+  // Prefer the occurrence under the "Exam Information" heading. PDF.js emits a
+  // table's headers before its values, so the heading is an ordering hint, not
+  // a hard boundary — compare positions instead of slicing between headings.
+  const exam = text.search(/Exam\s+Information/i);
+  const pick = list => {
+    if (!list.length) return null;
+    const after = exam >= 0 ? list.filter(h => h.at > exam) : [];
+    return (after.length ? after : list)[0].value;
+  };
+  return pick(withCode) || pick(titleOnly);
 }
 
 function lastNameKey(name) {
@@ -2031,45 +2038,38 @@ function lastNameKey(name) {
 }
 
 function extractInstructorInfo(text) {
-  // PDF.js joins tokens with spaces — there are no real newlines in its output,
-  // so everything here works on the raw space-joined string.
-  // Cover sheets come in a few layouts, so try the most specific pattern first
-  // and fall back progressively.
+  // Spec: the instructor of record is the FIRST box under the cover sheet's
+  // "Faculty Information" section, written as "Name: Nicole Hughes -
+  // nhughes@highpoint.edu" (older sheets label it "Faculty Name:"). A sheet may
+  // list several faculty boxes; only the first one is responsible for the exam.
+  // PDF.js joins tokens with spaces and emits no newlines, so this works on the
+  // raw joined string.
+  if (!text) return null;
   const EMAIL_SRC = '[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}';
   const NAME_SRC  = '[A-Za-z][A-Za-z.\'\\-]*(?:\\s+[A-Za-z][A-Za-z.\'\\-]*){0,3}?';
 
-  // The student's own name/email also appear on the sheet — never report those
-  // as the instructor.
+  // The student's own name and email also appear on the sheet — never report those.
   let studentEmail = null;
   const sm = text.match(new RegExp('Student\\s+Email\\s*:?\\s*(' + EMAIL_SRC + ')', 'i'));
   if (sm) studentEmail = sm[1].toLowerCase();
 
-  // 1) Old form: "Faculty Name: Roger Vaughan - rvaughan@highpoint.edu"
-  const m1 = text.match(new RegExp('Faculty\\s+Name\\s*:?\\s*(' + NAME_SRC + ')\\s*[-–—]\\s*(' + EMAIL_SRC + ')', 'i'));
-  if (m1) return { name: m1[1].trim(), email: m1[2].toLowerCase() };
-
-  // 2) New Accommodate form: a bare "Name: Kenneth McKenna - kmckenn2@highpoint.edu"
-  //    (the student block always uses "Student Name:", so a bare "Name:" is faculty)
-  const re2 = new RegExp('(?:^|[^A-Za-z])Name\\s*:?\\s*(' + NAME_SRC + ')\\s*[-–—]\\s*(' + EMAIL_SRC + ')', 'gi');
-  let m2;
-  while ((m2 = re2.exec(text)) !== null) {
-    const email = m2[2].toLowerCase();
-    if (email !== studentEmail) return { name: m2[1].trim(), email };
-  }
-
-  // 3) Last resort: any email that isn't the student's, with whatever
-  //    capitalized words sit immediately before it treated as the name.
-  const reEmail = new RegExp(EMAIL_SRC, 'g');
-  let m3;
-  while ((m3 = reEmail.exec(text)) !== null) {
-    const email = m3[0].toLowerCase();
+  // Collect every "Name: <person> - <email>" box in document order.
+  const re = new RegExp('(?:Faculty\\s+)?Name\\s*:?\\s*(' + NAME_SRC + ')\\s*[-\u2013\u2014]\\s*(' + EMAIL_SRC + ')', 'gi');
+  const boxes = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const email = m[2].toLowerCase();
     if (email === studentEmail) continue;
-    const before = text.slice(Math.max(0, m3.index - 90), m3.index);
-    const nm = before.match(/([A-Z][A-Za-z.'\-]+(?:\s+[A-Z][A-Za-z.'\-]+){0,3})\s*[-–—:]?\s*$/);
-    return { name: nm ? nm[1].trim() : 'Unknown', email };
+    boxes.push({ at: m.index, name: m[1].trim(), email: email });
   }
+  if (!boxes.length) return null;
 
-  return null;
+  // Prefer boxes under the "Faculty Information" heading. As above, PDF.js puts
+  // the headings before their values, so this is an ordering hint, not a slice.
+  const fac = text.search(/Faculty\s+Information/i);
+  const under = fac >= 0 ? boxes.filter(b => b.at > fac) : [];
+  const pick = (under.length ? under : boxes)[0];
+  return { name: pick.name, email: pick.email };
 }
 
 function renderUnclearInstructorsSidebar() {
