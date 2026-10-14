@@ -2360,7 +2360,7 @@ function mergeRosterFromSheets() {
     if (!row) {
       row = instructorRoster[key] = {
         name: r.name || '', email: r.email || '', course: r.course || '',
-        format: '', length: null, note: '', updated: ''
+        format: [], length: null, note: '', updated: ''
       };
     }
     if (!row.name  && r.name)  row.name  = r.name;
@@ -2368,7 +2368,7 @@ function mergeRosterFromSheets() {
     if (!row.course && r.course) row.course = r.course;
     // A format or length read off the cover sheet is a starting value only —
     // a reply the user has already recorded always wins.
-    if (!row.format && (r.format === 'Paper' || r.format === 'Online')) row.format = r.format;
+    if (!rosterFormatList(row).length && (r.format === 'Paper' || r.format === 'Online')) row.format = [r.format];
     if (row.length == null && r.classLength != null) row.length = r.classLength;
     row.bookings = (row.bookings || 0) + 1;
   });
@@ -2379,8 +2379,24 @@ function rosterRows() {
   return Object.keys(instructorRoster).map(k => Object.assign({ key: k }, instructorRoster[k]));
 }
 
+// A row's format is a LIST — an instructor may run the same course both on
+// paper and online. Rows saved by earlier versions hold a plain string, so
+// always read through this helper rather than touching r.format directly.
+function rosterFormatList(r) {
+  if (!r || !r.format) return [];
+  return Array.isArray(r.format) ? r.format.slice() : [r.format];
+}
+
+function rosterFormatLabel(r) {
+  const l = rosterFormatList(r);
+  // Fixed order so the label reads the same way every time
+  const ordered = ['Paper', 'Online'].filter(f => l.includes(f));
+  l.forEach(f => { if (!ordered.includes(f)) ordered.push(f); });
+  return ordered.join(' + ');
+}
+
 function rosterIsComplete(r) {
-  return !!(r.format && r.length != null && r.length !== '');
+  return rosterFormatList(r).length > 0 && r.length != null && r.length !== '';
 }
 
 function openInstructorPanel() {
@@ -2418,7 +2434,8 @@ function renderInstructorPanel() {
   if (rosterSearch) rows = rows.filter(r =>
     (r.name || '').toLowerCase().includes(rosterSearch) ||
     (r.email || '').toLowerCase().includes(rosterSearch) ||
-    (r.course || '').toLowerCase().includes(rosterSearch));
+    (r.course || '').toLowerCase().includes(rosterSearch) ||
+    rosterFormatLabel(r).toLowerCase().includes(rosterSearch));
 
   rows.sort((a, b) =>
     lastNameKey(a.name || a.email).localeCompare(lastNameKey(b.name || b.email)) ||
@@ -2451,8 +2468,9 @@ function renderInstructorPanel() {
     const k    = r.key.replace(/"/g, '&quot;');
     const ok   = rosterIsComplete(r);
     const tint = ok ? 'var(--green-bg)' : 'transparent';
+    const active = rosterFormatList(r);
     const btn  = (val, label) => {
-      const on = r.format === val;
+      const on = active.includes(val);
       return `<button onclick="setRosterFormat('${k}','${val}')" style="padding:3px 9px;margin-right:4px;border-radius:5px;cursor:pointer;
         font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;
         border:1px solid ${on ? 'transparent' : 'var(--border)'};
@@ -2473,7 +2491,11 @@ function renderInstructorPanel() {
           onchange="setRosterField('${k}','length',this.value)"
           style="width:72px;padding:4px 6px;border:1px solid var(--border2);border-radius:5px;font-family:var(--mono);font-size:11px;background:var(--surface);color:var(--text)">
       </td>
-      <td style="padding:7px 6px;text-align:center">${ok ? '<span style="color:var(--green);font-size:13px" title="Complete">✓</span>' : ''}</td>
+      <td style="padding:7px 6px;text-align:center;white-space:nowrap">${
+        active.length > 1
+          ? '<span style="font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.4px;background:var(--accent-light);color:var(--accent);padding:2px 5px;border-radius:4px" title="Paper + Online">BOTH</span>'
+          : (ok ? '<span style="color:var(--green);font-size:13px" title="Complete">✓</span>' : '')
+      }</td>
     </tr>`;
   });
   body.innerHTML = html + '</tbody></table>';
@@ -2482,7 +2504,10 @@ function renderInstructorPanel() {
 function setRosterFormat(key, val) {
   const r = instructorRoster[key];
   if (!r) return;
-  r.format  = (r.format === val) ? '' : val;   // click again to clear
+  const list = rosterFormatList(r);
+  const at = list.indexOf(val);
+  if (at >= 0) list.splice(at, 1); else list.push(val);   // click again to clear
+  r.format  = list;
   r.updated = new Date().toISOString();
   saveToLocalStorage();
   renderInstructorPanel();
@@ -2512,7 +2537,7 @@ function addRosterRow() {
   while (instructorRoster[key]) { i++; key = rosterKey(email, 'new ' + i); }
   instructorRoster[key] = {
     name: existing ? existing.name : '', email: email.toLowerCase(),
-    course: '', format: '', length: null, note: '', updated: new Date().toISOString()
+    course: '', format: [], length: null, note: '', updated: new Date().toISOString()
   };
   saveToLocalStorage();
   renderInstructorPanel();
@@ -2521,7 +2546,7 @@ function addRosterRow() {
 
 function clearRosterResponses() {
   if (!confirm('Clear the format and minutes you have recorded for every instructor?\n\nThe instructor list itself stays.')) return;
-  Object.values(instructorRoster).forEach(r => { r.format = ''; r.length = null; r.updated = ''; });
+  Object.values(instructorRoster).forEach(r => { r.format = []; r.length = null; r.updated = ''; });
   saveToLocalStorage();
   renderInstructorPanel();
   renderInstructorSidebar();
