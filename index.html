@@ -1800,12 +1800,22 @@ async function handlePdfZip(file) {
       const instrInfo2 = extractInstructorInfo(text);
       const classLen   = extractClassLength(text);
       const courseName = extractCourse(text);
+      // Many cover sheets print the "Exam Information" heading with nothing under
+      // it — the instructor hasn't submitted the exam details in Accommodate yet.
+      // That's a different thing from an exam whose format we couldn't read, so
+      // track it separately instead of reporting a blank course.
+      const examSubmitted = !!courseName || /format of this exam/i.test(text) || /Final\s+Exam\s*:/i.test(text);
+
       allInstructorRows.push({
         name:        instrInfo2 ? instrInfo2.name  : '',
         email:       instrInfo2 ? instrInfo2.email : '',
         course:      courseName || '',
         classLength: classLen,
-        format:      format === 'online' ? 'Online' : format === 'paper' ? 'Paper' : 'Unclear'
+        examSubmitted: examSubmitted,
+        format:      !examSubmitted ? 'Not submitted'
+                     : format === 'online' ? 'Online'
+                     : format === 'paper'  ? 'Paper' : 'Unclear',
+        file:        fname               // kept so a row can be traced back to its PDF
       });
 
       if (format === 'online') {
@@ -1865,13 +1875,13 @@ async function handlePdfZip(file) {
       const excelCnt = document.getElementById('instructorExcelCount');
       if (excelCnt) {
         // Cover sheets collected vs. the instructor+course rows that will export
+        // Cover sheets collected -> instructor/course rows, plus how many
+        // bookings are still waiting on exam details from the instructor.
         const n = allInstructorRows.length;
-        const uniq = new Set(
-          allInstructorRows
-            .filter(r => (r.name && r.name !== 'Unknown') || r.email)
-            .map(r => (r.email || r.name || '').toLowerCase() + '||' + (r.course || '').toLowerCase())
-        ).size;
-        excelCnt.textContent = n + ' sheets → ' + uniq + ' rows';
+        const ok = allInstructorRows.filter(r => ((r.name && r.name !== 'Unknown') || r.email) && r.examSubmitted !== false);
+        const uniq = new Set(ok.map(r => (r.email || r.name || '').toLowerCase() + '||' + (r.course || '').toLowerCase())).size;
+        const waiting = allInstructorRows.filter(r => r.examSubmitted === false).length;
+        excelCnt.textContent = n + ' sheets → ' + uniq + ' rows' + (waiting ? ' · ' + waiting + ' awaiting' : '');
       }
     }
 
@@ -2303,11 +2313,17 @@ function exportInstructorExcel() {
   const usable = allInstructorRows.filter(r => (r.name && r.name !== 'Unknown') || r.email);
   if (!usable.length) { showNotif('No instructor names or emails could be read from those cover sheets.'); return; }
 
+  // Split by whether the instructor has actually submitted the exam details.
+  // A sheet with an empty "Exam Information" section has no course to report, so
+  // listing it beside real courses would just be a row of blanks.
+  const submitted = usable.filter(r => r.examSubmitted !== false);
+  const awaiting  = usable.filter(r => r.examSubmitted === false);
+
   // One row per instructor per course — a ZIP holds one cover sheet per student,
   // so several students in the same section would otherwise repeat the same row.
   // An instructor teaching 2-3 courses/sections still gets a row for each.
   const byKey = new Map();
-  usable.forEach(r => {
+  submitted.forEach(r => {
     const who = (r.email || r.name || '').toLowerCase();
     const key = who + '||' + (r.course || '').toLowerCase();
     const prev = byKey.get(key);
@@ -2368,14 +2384,36 @@ function exportInstructorExcel() {
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Instructors');
+
+  // Second tab: instructors who haven't submitted exam details yet. These are
+  // the people to chase, one row each, with how many bookings are waiting.
+  if (awaiting.length) {
+    const wait = new Map();
+    awaiting.forEach(r => {
+      const key = (r.email || r.name || '').toLowerCase();
+      const prev = wait.get(key);
+      if (!prev) { wait.set(key, { name: r.name || '', email: r.email || '', count: 1, files: [r.file || ''] }); return; }
+      prev.count++;
+      if (!prev.name && r.name) prev.name = r.name;
+      if (prev.files.length < 12 && r.file) prev.files.push(r.file);
+    });
+    const wsorted = [...wait.values()].sort((x, y) =>
+      (x.name ? lastNameKey(x.name) : (x.email || '')).localeCompare(y.name ? lastNameKey(y.name) : (y.email || '')));
+
+    const rv = [['Instructor Name', 'Email', 'Bookings Awaiting', 'Example Booking(s)']];
+    wsorted.forEach(w => rv.push([w.name, w.email, w.count, w.files.slice(0, 4).join('; ')]));
+    const ws2 = XLSX.utils.aoa_to_sheet(rv);
+    ws2['!cols'] = [{ wch: 24 }, { wch: 30 }, { wch: 18 }, { wch: 60 }];
+    XLSX.utils.book_append_sheet(wb, ws2, 'Awaiting Exam Info');
+  }
+
   XLSX.writeFile(wb, `instructor_list_${new Date().toISOString().slice(0,10)}.xlsx`);
 
   // Say plainly when a cover sheet's course couldn't be read, rather than
   // leaving a silently blank cell in the spreadsheet.
-  const noCourse = sorted.filter(r => !r.course).length;
   showNotif(
-    `Exported ${sorted.length} row${sorted.length !== 1 ? 's' : ''} from ${allInstructorRows.length} cover sheets.` +
-    (noCourse ? ` ${noCourse} had no course detected.` : '')
+    `Exported ${sorted.length} instructor/course row${sorted.length !== 1 ? 's' : ''} from ${allInstructorRows.length} cover sheets.` +
+    (awaiting.length ? ` ${awaiting.length} booking${awaiting.length !== 1 ? 's have' : ' has'} no exam info yet — see the "Awaiting Exam Info" tab.` : '')
   );
 }
 
