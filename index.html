@@ -1799,9 +1799,11 @@ async function handlePdfZip(file) {
       // Collect instructor row for Excel export (all PDFs, accumulates across ZIPs)
       const instrInfo2 = extractInstructorInfo(text);
       const classLen   = extractClassLength(text);
+      const courseName = extractCourse(text);
       allInstructorRows.push({
         name:        instrInfo2 ? instrInfo2.name  : '',
         email:       instrInfo2 ? instrInfo2.email : '',
+        course:      courseName || '',
         classLength: classLen,
         format:      format === 'online' ? 'Online' : format === 'paper' ? 'Paper' : 'Unclear'
       });
@@ -1861,7 +1863,16 @@ async function handlePdfZip(file) {
     if (excelSec) {
       excelSec.style.display = allInstructorRows.length ? 'block' : 'none';
       const excelCnt = document.getElementById('instructorExcelCount');
-      if (excelCnt) excelCnt.textContent = allInstructorRows.length + ' rows';
+      if (excelCnt) {
+        // Cover sheets collected vs. the instructor+course rows that will export
+        const n = allInstructorRows.length;
+        const uniq = new Set(
+          allInstructorRows
+            .filter(r => (r.name && r.name !== 'Unknown') || r.email)
+            .map(r => (r.email || r.name || '').toLowerCase() + '||' + (r.course || '').toLowerCase())
+        ).size;
+        excelCnt.textContent = n + ' sheets → ' + uniq + ' rows';
+      }
     }
 
     // Show summary
@@ -1956,30 +1967,69 @@ function extractClassLength(text) {
   return null;
 }
 
+function extractCourse(text) {
+  // Cover sheets write the course as "Course: <title> (DEPT-NUM-SEC) (DEPT-NUM-SEC)",
+  // sometimes labeled "Course (Object):" and sometimes with no colon at all.
+  // The section code is repeated — collapse it to one. The title itself may
+  // contain a colon ("Nutrition: Hlth Scnc Prfssn").
+  const CODE = '[A-Za-z]{2,5}-\\d{3,4}[A-Za-z]?-\\d{1,3}[A-Za-z]?';
+  const label = /\bCourse\b\s*(?:\(\s*Object\s*\))?\s*:?\s*/gi;
+  let m;
+  while ((m = label.exec(text)) !== null) {
+    const after = text.slice(m.index + m[0].length, m.index + m[0].length + 160);
+    // The title must not run through a parenthetical — that keeps us inside one field
+    const hit = after.match(new RegExp('^([^()]{2,90}?)\\s*\\((' + CODE + ')\\)'));
+    if (hit) {
+      const title = hit[1].replace(/\s+/g, ' ').trim()
+                          .replace(/[:,\-–—]+$/, '').trim();
+      if (title) return title + ' (' + hit[2].toUpperCase() + ')';
+    }
+  }
+  // Fallback: a bare section code anywhere on the sheet
+  const bare = text.match(new RegExp('\\((' + CODE + ')\\)'));
+  return bare ? bare[1].toUpperCase() : null;
+}
+
 function extractInstructorInfo(text) {
-  // PDF.js joins tokens with spaces — no real newlines in output
-  // Work on the raw space-joined string
-  const emailRe = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+  // PDF.js joins tokens with spaces — there are no real newlines in its output,
+  // so everything here works on the raw space-joined string.
+  // Cover sheets come in a few layouts, so try the most specific pattern first
+  // and fall back progressively.
+  const EMAIL_SRC = '[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}';
+  const NAME_SRC  = '[A-Za-z][A-Za-z.\'\\-]*(?:\\s+[A-Za-z][A-Za-z.\'\\-]*){0,3}?';
 
-  // Strategy: find the Faculty Information section, then grab the nearest email
-  // and the name that precedes it (after "Name:" label)
-  const facIdx = text.search(/Faculty\s+Information/i);
-  const searchText = facIdx >= 0 ? text.slice(facIdx, facIdx + 500) : text;
+  // The student's own name/email also appear on the sheet — never report those
+  // as the instructor.
+  let studentEmail = null;
+  const sm = text.match(new RegExp('Student\\s+Email\\s*:?\\s*(' + EMAIL_SRC + ')', 'i'));
+  if (sm) studentEmail = sm[1].toLowerCase();
 
-  // Find email anywhere in the faculty section
-  const emailMatch = searchText.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/);
-  if (!emailMatch) return null;
-  const email = emailMatch[0].toLowerCase();
+  // 1) Old form: "Faculty Name: Roger Vaughan - rvaughan@highpoint.edu"
+  const m1 = text.match(new RegExp('Faculty\\s+Name\\s*:?\\s*(' + NAME_SRC + ')\\s*[-–—]\\s*(' + EMAIL_SRC + ')', 'i'));
+  if (m1) return { name: m1[1].trim(), email: m1[2].toLowerCase() };
 
-  // Find name: look for "Name:" or "Faculty Name:" before the email
-  const beforeEmail = searchText.slice(0, searchText.indexOf(emailMatch[0]));
-  const nameMatch = beforeEmail.match(/(?:Faculty\s+)?Name\s*:\s*([^:]+?)(?:\s*-\s*)?$/i);
-  let name = 'Unknown';
-  if (nameMatch) {
-    name = nameMatch[1].replace(/\s*-\s*$/, '').trim();
+  // 2) New Accommodate form: a bare "Name: Kenneth McKenna - kmckenn2@highpoint.edu"
+  //    (the student block always uses "Student Name:", so a bare "Name:" is faculty)
+  const re2 = new RegExp('(?:^|[^A-Za-z])Name\\s*:?\\s*(' + NAME_SRC + ')\\s*[-–—]\\s*(' + EMAIL_SRC + ')', 'gi');
+  let m2;
+  while ((m2 = re2.exec(text)) !== null) {
+    const email = m2[2].toLowerCase();
+    if (email !== studentEmail) return { name: m2[1].trim(), email };
   }
 
-  return { name, email };
+  // 3) Last resort: any email that isn't the student's, with whatever
+  //    capitalized words sit immediately before it treated as the name.
+  const reEmail = new RegExp(EMAIL_SRC, 'g');
+  let m3;
+  while ((m3 = reEmail.exec(text)) !== null) {
+    const email = m3[0].toLowerCase();
+    if (email === studentEmail) continue;
+    const before = text.slice(Math.max(0, m3.index - 90), m3.index);
+    const nm = before.match(/([A-Z][A-Za-z.'\-]+(?:\s+[A-Z][A-Za-z.'\-]+){0,3})\s*[-–—:]?\s*$/);
+    return { name: nm ? nm[1].trim() : 'Unknown', email };
+  }
+
+  return null;
 }
 
 function renderUnclearInstructorsSidebar() {
@@ -2209,16 +2259,56 @@ function clearEmailHistory() {
 function exportInstructorExcel() {
   if (!allInstructorRows.length) { showNotif('No instructor data — load a ZIP first.'); return; }
 
+  // Drop rows where no instructor could be identified at all
+  const usable = allInstructorRows.filter(r => (r.name && r.name !== 'Unknown') || r.email);
+  if (!usable.length) { showNotif('No instructor names or emails could be read from those cover sheets.'); return; }
+
+  // One row per instructor per course — a ZIP holds one cover sheet per student,
+  // so several students in the same section would otherwise repeat the same row.
+  // An instructor teaching 2-3 courses/sections still gets a row for each.
+  const byKey = new Map();
+  usable.forEach(r => {
+    const who = (r.email || r.name || '').toLowerCase();
+    const key = who + '||' + (r.course || '').toLowerCase();
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, {
+        name: r.name || '',
+        email: r.email || '',
+        course: r.course || '',
+        classLength: r.classLength,
+        formats: new Set(r.format ? [r.format] : [])
+      });
+      return;
+    }
+    // Fill in anything the first sheet for this course didn't carry
+    if (!prev.name  && r.name)  prev.name  = r.name;
+    if (!prev.email && r.email) prev.email = r.email;
+    if (prev.classLength == null && r.classLength != null) prev.classLength = r.classLength;
+    if (r.format) prev.formats.add(r.format);
+  });
+
+  // Sort A-Z by instructor, then by course within one instructor
+  const sorted = [...byKey.values()].sort((a, b) => {
+    const ka = (a.name && a.name !== 'Unknown' ? a.name : (a.email || '')).toLowerCase();
+    const kb = (b.name && b.name !== 'Unknown' ? b.name : (b.email || '')).toLowerCase();
+    return ka.localeCompare(kb) || (a.course || '').toLowerCase().localeCompare((b.course || '').toLowerCase());
+  });
+
   // Build worksheet rows
   const wsData = [
-    ['Instructor Name', 'Email', 'Class Length (min)', 'Exam Format']
+    ['Instructor Name', 'Email', 'Course', 'Class Length (min)', 'Exam Format']
   ];
-  allInstructorRows.forEach(r => {
+  sorted.forEach(r => {
+    // If sheets for one course disagree, show both rather than silently picking one
+    const fmts = [...r.formats].filter(f => f !== 'Unclear');
+    const fmt  = fmts.length ? fmts.sort().join(' / ') : (r.formats.size ? 'Unclear' : '');
     wsData.push([
       r.name || '',
       r.email || '',
+      r.course || '',
       r.classLength != null ? r.classLength : '',
-      r.format || ''
+      fmt
     ]);
   });
 
@@ -2228,6 +2318,7 @@ function exportInstructorExcel() {
   ws['!cols'] = [
     { wch: 24 }, // Name
     { wch: 30 }, // Email
+    { wch: 42 }, // Course
     { wch: 20 }, // Class Length
     { wch: 16 }  // Format
   ];
