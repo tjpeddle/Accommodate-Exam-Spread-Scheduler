@@ -1969,25 +1969,65 @@ function extractClassLength(text) {
 
 function extractCourse(text) {
   // Cover sheets write the course as "Course: <title> (DEPT-NUM-SEC) (DEPT-NUM-SEC)",
-  // sometimes labeled "Course (Object):" and sometimes with no colon at all.
-  // The section code is repeated — collapse it to one. The title itself may
-  // contain a colon ("Nutrition: Hlth Scnc Prfssn").
-  const CODE = '[A-Za-z]{2,5}-\\d{3,4}[A-Za-z]?-\\d{1,3}[A-Za-z]?';
-  const label = /\bCourse\b\s*(?:\(\s*Object\s*\))?\s*:?\s*/gi;
-  let m;
+  // sometimes labeled "Course (Object):", "Course Name:" or "Class:", and sometimes
+  // with no colon at all. The section code is printed twice — collapse it to one.
+  // The title itself may contain a colon ("Nutrition: Hlth Scnc Prfssn").
+  if (!text) return null;
+  const CODE = '[A-Za-z]{2,6}-\\d{3,4}[A-Za-z]?(?:-\\d{1,3}[A-Za-z]?)?';
+  const STOP = '(?:Title|Notes?|Final\\s+Exam|Description|Allowances|Faculty|Exam\\s+Information|Memory\\s+Aid|Instructor|What\\s+is)';
+  const clean = s => s.replace(/\s+/g, ' ').trim().replace(/[:,;\-–—.]+$/, '').trim();
+
+  const label = /\b(?:Course|Class)\b(?:\s*\(\s*Object\s*\))?(?:\s+Name)?(\s*:)?\s*/gi;
+  let m, noCodeTitle = null;
   while ((m = label.exec(text)) !== null) {
-    const after = text.slice(m.index + m[0].length, m.index + m[0].length + 160);
-    // The title must not run through a parenthetical — that keeps us inside one field
-    const hit = after.match(new RegExp('^([^()]{2,90}?)\\s*\\((' + CODE + ')\\)'));
-    if (hit) {
-      const title = hit[1].replace(/\s+/g, ' ').trim()
-                          .replace(/[:,\-–—]+$/, '').trim();
-      if (title) return title + ' (' + hit[2].toUpperCase() + ')';
+    const hadColon = !!m[1];
+    const rest = text.slice(m.index + m[0].length, m.index + m[0].length + 200);
+
+    // (a) Best case: "<title> (DEPT-NUM-SEC)". The title must not run through a
+    //     parenthetical, which keeps the match inside a single field.
+    const hit = rest.match(new RegExp('^([^()]{2,90}?)\\s*\\((' + CODE + ')\\)'));
+    if (hit && /^[A-Za-z0-9]/.test(hit[1].trim())) {
+      const t = clean(hit[1]);
+      if (t) return t + ' (' + hit[2].toUpperCase() + ')';
+    }
+
+    // (b) No section code printed: take the title up to the next field label.
+    //     Only trusted when the label actually carried a colon, so prose such as
+    //     "...and of the course. Final Exam No" can't be mistaken for the field.
+    if (hadColon && !noCodeTitle) {
+      const h2 = rest.match(new RegExp('^([A-Za-z0-9][^()]{1,89}?)\\s+' + STOP + '\\b', 'i'));
+      if (h2) { const t = clean(h2[1]); if (t && t.length > 2) noCodeTitle = t; }
     }
   }
-  // Fallback: a bare section code anywhere on the sheet
+  if (noCodeTitle) return noCodeTitle;
+
+  // (c) Last resort: a bare section code anywhere on the sheet
   const bare = text.match(new RegExp('\\((' + CODE + ')\\)'));
   return bare ? bare[1].toUpperCase() : null;
+}
+
+function lastNameKey(name) {
+  // Sort key for "A-Z by last name", tolerant of initials, suffixes and particles.
+  if (!name) return '';
+  let n = String(name).replace(/\s+/g, ' ').trim();
+  const SUFFIX   = /^(jr|sr|ii|iii|iv|v|phd|edd|md|dds|dvm|esq|do|mba|ma|ms|bs)$/i;
+  const isSuffix = s => SUFFIX.test(String(s).replace(/[.,\s]/g, ''));
+  const PARTICLE = /^(van|von|de|del|della|der|den|di|da|du|la|le|st|mac|mc|bin|ibn|al|ter|ten|op)$/i;
+
+  // Drop trailing credentials after a comma: "Jane Doe, Ph.D."
+  let segs = n.split(',').map(s => s.trim()).filter(Boolean);
+  while (segs.length > 1 && isSuffix(segs[segs.length - 1])) segs.pop();
+  // Already last-name-first: "Schraeder, A.J."
+  if (segs.length > 1) return segs[0].toLowerCase();
+  n = segs[0] || n;
+
+  let parts = n.split(' ').filter(Boolean);
+  while (parts.length > 1 && isSuffix(parts[parts.length - 1])) parts.pop();
+  if (!parts.length) return n.toLowerCase();
+  let i = parts.length - 1;
+  // Keep particles with the surname: "Ludwig van Beethoven" -> "van beethoven"
+  while (i > 0 && PARTICLE.test(parts[i - 1].replace(/\./g, ''))) i--;
+  return parts.slice(i).join(' ').toLowerCase();
 }
 
 function extractInstructorInfo(text) {
@@ -2288,12 +2328,15 @@ function exportInstructorExcel() {
     if (r.format) prev.formats.add(r.format);
   });
 
-  // Sort A-Z by instructor, then by course within one instructor
-  const sorted = [...byKey.values()].sort((a, b) => {
-    const ka = (a.name && a.name !== 'Unknown' ? a.name : (a.email || '')).toLowerCase();
-    const kb = (b.name && b.name !== 'Unknown' ? b.name : (b.email || '')).toLowerCase();
-    return ka.localeCompare(kb) || (a.course || '').toLowerCase().localeCompare((b.course || '').toLowerCase());
-  });
+  // Sort A-Z by LAST name, then by course within one instructor
+  // (fall back to the email when no name parsed, so those rows still sort sensibly)
+  const sortKey = r => (r.name && r.name !== 'Unknown')
+    ? lastNameKey(r.name)
+    : (r.email || '').toLowerCase();
+  const sorted = [...byKey.values()].sort((a, b) =>
+    sortKey(a).localeCompare(sortKey(b)) ||
+    (a.course || '').toLowerCase().localeCompare((b.course || '').toLowerCase())
+  );
 
   // Build worksheet rows
   const wsData = [
@@ -2326,6 +2369,14 @@ function exportInstructorExcel() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Instructors');
   XLSX.writeFile(wb, `instructor_list_${new Date().toISOString().slice(0,10)}.xlsx`);
+
+  // Say plainly when a cover sheet's course couldn't be read, rather than
+  // leaving a silently blank cell in the spreadsheet.
+  const noCourse = sorted.filter(r => !r.course).length;
+  showNotif(
+    `Exported ${sorted.length} row${sorted.length !== 1 ? 's' : ''} from ${allInstructorRows.length} cover sheets.` +
+    (noCourse ? ` ${noCourse} had no course detected.` : '')
+  );
 }
 
 function findRecord(studentName, dateStr, startHour, startMin) {
