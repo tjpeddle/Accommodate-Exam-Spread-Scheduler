@@ -1799,14 +1799,12 @@ async function handlePdfZip(file) {
       // Collect instructor row for Excel export (all PDFs, accumulates across ZIPs)
       const instrInfo2 = extractInstructorInfo(text);
       const classLen   = extractClassLength(text);
-      if (instrInfo2) {
-        allInstructorRows.push({
-          name: instrInfo2.name,
-          email: instrInfo2.email,
-          classLength: classLen,
-          format: format === 'online' ? 'Online' : format === 'paper' ? 'Paper' : 'Unclear'
-        });
-      }
+      allInstructorRows.push({
+        name:        instrInfo2 ? instrInfo2.name  : '',
+        email:       instrInfo2 ? instrInfo2.email : '',
+        classLength: classLen,
+        format:      format === 'online' ? 'Online' : format === 'paper' ? 'Paper' : 'Unclear'
+      });
 
       if (format === 'online') {
         const rec = findRecord(studentName, dateStr, startHour, startMin);
@@ -1838,7 +1836,7 @@ async function handlePdfZip(file) {
         skippedUnknown++;
         noMatchNames.push((studentName || fname) + ' (format unclear)');
         // Try to extract instructor info from this PDF's cover sheet
-        const instrInfo = extractInstructorInfo(text);
+        const instrInfo = instrInfo2; // already extracted above
         if (instrInfo && instrInfo.email) {
           if (!unclearInstructors[instrInfo.email]) {
             unclearInstructors[instrInfo.email] = { name: instrInfo.name, email: instrInfo.email, students: [] };
@@ -1959,63 +1957,29 @@ function extractClassLength(text) {
 }
 
 function extractInstructorInfo(text) {
-  // Normalize line endings
-  const lines = text.replace(/\r/g, '').split('\n').map(l => l.trim()).filter(Boolean);
-  const emailRe = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
+  // PDF.js joins tokens with spaces — no real newlines in output
+  // Work on the raw space-joined string
+  const emailRe = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
 
-  // Find the Faculty Information section
-  let facultyIdx = lines.findIndex(l => /Faculty\s+Information/i.test(l));
-  if (facultyIdx === -1) facultyIdx = 0; // fall back to searching whole doc
+  // Strategy: find the Faculty Information section, then grab the nearest email
+  // and the name that precedes it (after "Name:" label)
+  const facIdx = text.search(/Faculty\s+Information/i);
+  const searchText = facIdx >= 0 ? text.slice(facIdx, facIdx + 500) : text;
 
-  const searchLines = lines.slice(facultyIdx, facultyIdx + 15);
+  // Find email anywhere in the faculty section
+  const emailMatch = searchText.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/);
+  if (!emailMatch) return null;
+  const email = emailMatch[0].toLowerCase();
 
-  let name = null;
-  let email = null;
-
-  for (let i = 0; i < searchLines.length; i++) {
-    const line = searchLines[i];
-
-    // Format A: "Name: Kenneth McKenna kmckenn2@highpoint.edu"  (all on one line)
-    // Format C: "Name: Taffey Stout - tstout1@highpoint.edu"    (dash separator)
-    const nameLineMatch = line.match(/^(?:Faculty\s+)?Name\s*:\s*(.+)/i);
-    if (nameLineMatch) {
-      const seg = nameLineMatch[1].trim();
-      const emailMatch = seg.match(emailRe);
-      if (emailMatch) {
-        email = emailMatch[0].toLowerCase();
-        name  = seg.slice(0, seg.indexOf(emailMatch[0])).replace(/\s*-\s*$/, '').trim();
-        break;
-      } else {
-        // Name is on this line, email may be on the next line
-        // e.g. "Faculty Name: Roger Vaughan" then "- rvaughan@highpoint.edu"
-        name = seg.replace(/^-\s*/, '').trim();
-        // Look ahead up to 3 lines for the email
-        for (let j = i + 1; j < Math.min(i + 4, searchLines.length); j++) {
-          const nextLine = searchLines[j];
-          const nextEmail = nextLine.match(emailRe);
-          if (nextEmail) {
-            email = nextEmail[0].toLowerCase();
-            // Clean leading dash from name if needed
-            name = name.replace(/\s*-\s*$/, '').trim();
-            break;
-          }
-        }
-        if (email) break;
-      }
-    }
-
-    // Standalone email line with leading dash: "- rvaughan@highpoint.edu"
-    if (!email) {
-      const standaloneEmail = line.match(emailRe);
-      if (standaloneEmail && name) {
-        email = standaloneEmail[0].toLowerCase();
-        break;
-      }
-    }
+  // Find name: look for "Name:" or "Faculty Name:" before the email
+  const beforeEmail = searchText.slice(0, searchText.indexOf(emailMatch[0]));
+  const nameMatch = beforeEmail.match(/(?:Faculty\s+)?Name\s*:\s*([^:]+?)(?:\s*-\s*)?$/i);
+  let name = 'Unknown';
+  if (nameMatch) {
+    name = nameMatch[1].replace(/\s*-\s*$/, '').trim();
   }
 
-  if (!email) return null;
-  return { name: name || 'Unknown', email };
+  return { name, email };
 }
 
 function renderUnclearInstructorsSidebar() {
