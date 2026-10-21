@@ -479,6 +479,7 @@ table.sched td.office-cell { background: #fafbff; }
 
     <div style="padding:10px 20px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-shrink:0">
       <button onclick="addRosterRow()" style="padding:6px 12px;border:1px solid var(--border);background:transparent;color:var(--text);border-radius:6px;font-family:var(--mono);font-size:10px;cursor:pointer">+ Add Course Row</button>
+      <button onclick="applyRosterToSchedule()" style="padding:7px 14px;border:none;background:#1a7a4a;color:#fff;border-radius:6px;font-family:var(--mono);font-size:10px;font-weight:700;cursor:pointer;letter-spacing:.5px;text-transform:uppercase">↳ Apply to Schedule</button>
       <div style="font-size:10px;color:var(--muted);margin-left:auto">Saved automatically · persists between sessions</div>
       <button onclick="clearRosterResponses()" style="padding:6px 12px;border:1px solid var(--border2);background:transparent;color:var(--muted);border-radius:6px;font-family:var(--mono);font-size:10px;cursor:pointer">Clear Responses</button>
       <button onclick="resetRoster()" style="padding:6px 12px;border:1px solid var(--border2);background:transparent;color:var(--muted);border-radius:6px;font-family:var(--mono);font-size:10px;cursor:pointer" onmouseover="this.style.borderColor='#c0281a';this.style.color='#c0281a'" onmouseout="this.style.borderColor='var(--border2)';this.style.color='var(--muted)'">Reset List</button>
@@ -559,6 +560,10 @@ let allInstructorRows    = [];  // { name, email, course, classLength, format } 
 // identity even after the course text is edited by hand. PERSISTED, because the
 // replies trickle in over days and must survive reloads and new ZIP loads.
 let instructorRoster     = {};  // key → { name, email, course, format, length, note, updated }
+// rosterKey → [etKey] — which grid bookings each cover sheet belonged to. Lets a
+// reply be pushed onto the schedule even for instructors whose sheet listed no
+// course. PERSISTED alongside the roster.
+let rosterLinks          = {};
 
 // ══════════════════════════════════════════════════
 // INIT
@@ -745,7 +750,8 @@ function saveToLocalStorage() {
       dismissed: [...dismissedRemoved],
       examTypes,
       notifiedInstructors,
-      instructorRoster
+      instructorRoster,
+      rosterLinks
     };
     localStorage.setItem(LS_KEY, JSON.stringify(payload));
   } catch(e) { console.warn('localStorage save failed:', e); }
@@ -909,6 +915,7 @@ function restoreSessionBaseline() {
   // schedule grid: replies arrive over weeks, so restore them even when no
   // records were saved and regardless of the 14-day baseline valve below.
   instructorRoster    = saved.instructorRoster    || {};
+  rosterLinks         = saved.rosterLinks         || {};
   notifiedInstructors = saved.notifiedInstructors || {};
 
   if (!saved.records || !saved.records.length) return;
@@ -1865,6 +1872,19 @@ async function handlePdfZip(file) {
         file:        fname               // kept so a row can be traced back to its PDF
       });
 
+      // Remember which grid booking this cover sheet belongs to, so a reply
+      // recorded later can be applied to the schedule even when the sheet
+      // carried no course.
+      if (instrInfo2 || courseName) {
+        const linkRec = findRecord(studentName, dateStr, startHour, startMin);
+        if (linkRec) {
+          const lk = rosterKey(instrInfo2 ? instrInfo2.email : '', courseName || '');
+          const ek = etKey(linkRec);
+          if (!rosterLinks[lk]) rosterLinks[lk] = [];
+          if (!rosterLinks[lk].includes(ek)) rosterLinks[lk].push(ek);
+        }
+      }
+
       if (format === 'online') {
         const rec = findRecord(studentName, dateStr, startHour, startMin);
         if (rec) {
@@ -2353,6 +2373,11 @@ function rosterKey(email, course) {
 // Fold the cover sheets just parsed into the roster. Never clobbers a value a
 // person typed — parsed data only fills blanks.
 function mergeRosterFromSheets() {
+  // Booking counts are recomputed from the sheets currently loaded. They used
+  // to be incremented, which double-counted the first ZIP once the second was
+  // loaded (merge re-runs over the accumulated list).
+  Object.values(instructorRoster).forEach(r => { r.bookings = 0; });
+
   allInstructorRows.forEach(r => {
     if (!r.email && !r.name) return;
     const key = rosterKey(r.email || r.name, r.course);
@@ -2372,7 +2397,123 @@ function mergeRosterFromSheets() {
     if (row.length == null && r.classLength != null) row.length = r.classLength;
     row.bookings = (row.bookings || 0) + 1;
   });
+  absorbRosterPlaceholders();
   saveToLocalStorage();
+}
+
+// When a cover sheet first arrives with no course, the row is keyed on the
+// instructor alone. Once the instructor submits the exam details, the updated
+// ZIP produces a row keyed on instructor+course — a different key — which would
+// leave the original sitting there as a duplicate, holding whatever reply had
+// been recorded against it. Fold that reply into the real row instead.
+function absorbRosterPlaceholders() {
+  const byWho = {};
+  Object.keys(instructorRoster).forEach(k => {
+    const r = instructorRoster[k];
+    const who = (r.email || r.name || '').toLowerCase();
+    (byWho[who] = byWho[who] || []).push(k);
+  });
+
+  Object.keys(byWho).forEach(who => {
+    const keys  = byWho[who];
+    const blank = keys.filter(k => !instructorRoster[k].course);
+    const real  = keys.filter(k =>  instructorRoster[k].course);
+    // Only safe when exactly one course row exists; with several there is no way
+    // to tell which one the recorded reply referred to, so leave it visible.
+    if (!blank.length || real.length !== 1) return;
+
+    const target = instructorRoster[real[0]];
+    blank.forEach(bk => {
+      const ph = instructorRoster[bk];
+      const recorded = rosterFormatList(ph).length > 0 || ph.length != null;
+      if (recorded) {
+        // What a person typed wins over the sheet, but say so when they disagree
+        const sheetFmt = rosterFormatLabel(target);
+        const sheetLen = target.length;
+        const myFmt    = rosterFormatLabel(ph);
+        const diffs = [];
+        if (myFmt && sheetFmt && myFmt !== sheetFmt) diffs.push('cover sheet says ' + sheetFmt);
+        if (ph.length != null && sheetLen != null && ph.length !== sheetLen) diffs.push('cover sheet says ' + sheetLen + ' min');
+        if (rosterFormatList(ph).length) target.format = ph.format;
+        if (ph.length != null) target.length = ph.length;
+        target.conflict = diffs.join('; ');
+        target.updated  = ph.updated || target.updated;
+      }
+      // the bookings recorded under the blank-course key belong to the real row
+      if (rosterLinks[bk]) {
+        const dest = real[0];
+        rosterLinks[dest] = rosterLinks[dest] || [];
+        rosterLinks[bk].forEach(ek => { if (!rosterLinks[dest].includes(ek)) rosterLinks[dest].push(ek); });
+        delete rosterLinks[bk];
+      }
+      delete instructorRoster[bk];
+    });
+  });
+}
+
+// Section code out of a course string: "Found. Strategic Comm (STC-1225-01)" -> STC-1225-01
+function courseCode(course) {
+  if (!course) return '';
+  const m = String(course).match(/\(?\b([A-Za-z]{2,6}-\d{3,4}[A-Za-z]?(?:-\d{1,3}[A-Za-z]?)?)\b\)?/);
+  return m ? m[1].toUpperCase() : '';
+}
+
+// Which grid bookings a roster row covers. Two routes, because most rows have no
+// course yet: match the section code against the schedule (authoritative, and
+// catches bookings whose cover sheet wasn't in the ZIP), and fall back to the
+// bookings recorded from that instructor's cover sheets.
+function rosterTargets(key, row) {
+  const found = new Set();
+  const code = courseCode(row.course);
+  if (code) {
+    allRecords.forEach(r => {
+      if (r.removed) return;
+      if (courseCode(r.course) === code) found.add(etKey(r));
+    });
+  }
+  (rosterLinks[key] || []).forEach(ek => found.add(ek));
+  return [...found];
+}
+
+// Push every recorded reply onto the schedule. Driven by a button rather than
+// run on each click, so the grid only changes when asked.
+function applyRosterToSchedule() {
+  const rows = Object.keys(instructorRoster)
+    .map(k => ({ key: k, row: instructorRoster[k] }))
+    .filter(x => rosterFormatList(x.row).length > 0);
+
+  if (!rows.length) { showNotif('Nothing to apply — no formats recorded yet.'); return; }
+
+  let bookings = 0, applied = 0, unmatched = [];
+  rows.forEach(({ key, row }) => {
+    const want = rosterFormatList(row).map(f => f.toLowerCase());   // 'paper' / 'online'
+    const targets = rosterTargets(key, row);
+    if (!targets.length) { unmatched.push(row.name || row.email); return; }
+    applied++;
+    targets.forEach(ek => { examTypes[ek] = want.slice(); bookings++; });
+  });
+
+  saveToLocalStorage();
+  renderGrid();
+  renderNeedsTypeSidebar();
+  renderOnlineStudentsList();
+  updateStats();
+  renderInstructorPanel();
+
+  showNotif(
+    `Applied ${applied} instructor${applied !== 1 ? 's' : ''} to ${bookings} booking${bookings !== 1 ? 's' : ''}.` +
+    (unmatched.length ? ` ${unmatched.length} had no matching booking.` : '')
+  );
+}
+
+function deleteRosterRow(key) {
+  const r = instructorRoster[key];
+  if (!r) return;
+  if (!confirm('Remove ' + (r.name || r.email) + (r.course ? ' — ' + r.course : '') + ' from the list?')) return;
+  delete instructorRoster[key];
+  saveToLocalStorage();
+  renderInstructorPanel();
+  renderInstructorSidebar();
 }
 
 function rosterRows() {
@@ -2460,8 +2601,8 @@ function renderInstructorPanel() {
 
   let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
     '<thead><tr style="position:sticky;top:0;background:var(--surface);z-index:2">' +
-    ['Instructor','Email','Course','Format','Minutes',''].map((h,i) =>
-      `<th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);font-weight:600${i===5?';width:30px':''}">${h}</th>`
+    ['Instructor','Email','Course','Format','Minutes','',''].map((h,i) =>
+      `<th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);font-weight:600${i>=5?';width:30px':''}">${h}</th>`
     ).join('') + '</tr></thead><tbody>';
 
   rows.forEach(r => {
@@ -2492,10 +2633,17 @@ function renderInstructorPanel() {
           style="width:72px;padding:4px 6px;border:1px solid var(--border2);border-radius:5px;font-family:var(--mono);font-size:11px;background:var(--surface);color:var(--text)">
       </td>
       <td style="padding:7px 6px;text-align:center;white-space:nowrap">${
-        active.length > 1
-          ? '<span style="font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.4px;background:var(--accent-light);color:var(--accent);padding:2px 5px;border-radius:4px" title="Paper + Online">BOTH</span>'
-          : (ok ? '<span style="color:var(--green);font-size:13px" title="Complete">✓</span>' : '')
+        r.conflict
+          ? `<span style="color:var(--orange);font-size:13px;cursor:help" title="Your recorded reply differs — ${escHtml(r.conflict)}">⚠</span>`
+          : active.length > 1
+            ? '<span style="font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.4px;background:var(--accent-light);color:var(--accent);padding:2px 5px;border-radius:4px" title="Paper + Online">BOTH</span>'
+            : (ok ? '<span style="color:var(--green);font-size:13px" title="Complete">✓</span>' : '')
       }</td>
+      <td style="padding:7px 6px;text-align:center">
+        <span onclick="deleteRosterRow('${k}')" title="Remove this row"
+          style="cursor:pointer;color:var(--border);font-size:13px;line-height:1"
+          onmouseover="this.style.color='#c0281a'" onmouseout="this.style.color='var(--border)'">×</span>
+      </td>
     </tr>`;
   });
   body.innerHTML = html + '</tbody></table>';
