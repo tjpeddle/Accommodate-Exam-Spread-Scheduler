@@ -1332,7 +1332,8 @@ function renderGrid() {
             exam: student.exam, start: student.startRaw, end: student.endRaw,
             dur: student.durMin, slot: student.slot, room: student.room,
             status: student.status, removed: student.removed,
-            conflict: student.conflict, conflictWith: student.conflictWith
+            conflict: student.conflict, conflictWith: student.conflictWith,
+            instructor: instructorFor(student)
           });
           const ek = etKey(student);
           const etArr = Array.isArray(examTypes[ek]) ? examTypes[ek] : (examTypes[ek] ? [examTypes[ek]] : []);
@@ -1389,7 +1390,8 @@ function renderGrid() {
             exam: student.exam, start: student.startRaw, end: student.endRaw,
             dur: student.durMin, slot: student.slot, room: student.room,
             status: student.status, removed: student.removed,
-            conflict: student.conflict, conflictWith: student.conflictWith
+            conflict: student.conflict, conflictWith: student.conflictWith,
+            instructor: instructorFor(student)
           });
           const ek2 = etKey(student);
           const et2Arr = Array.isArray(examTypes[ek2]) ? examTypes[ek2] : (examTypes[ek2] ? [examTypes[ek2]] : []);
@@ -1632,6 +1634,7 @@ function showTip(e, tipId) {
     <div style="color:#aaa;font-size:11px">${escH(d.room)} · ${escH(d.slot)}</div>
     <div style="margin-top:5px">${escH(d.start)} – ${escH(d.end)} <span style="color:#888">(${fmtDur(d.dur)})</span></div>
     <div style="margin-top:3px;color:#ddd">${escH(d.course)}</div>
+    ${d.instructor ? `<div style="color:#9ec5ff;font-size:11px;margin-top:2px">👤 ${escH(d.instructor.name || d.instructor.email)}${d.instructor.email && d.instructor.name ? ` <span style="color:#7f8ca8">${escH(d.instructor.email)}</span>` : ''}</div>` : ''}
     ${d.exam ? `<div style="color:#aaa;font-size:11px;margin-top:2px">Exam: ${escH(d.exam)}</div>` : ''}
     <div style="color:#bbb;font-style:italic;font-size:10px;margin-top:3px">${escH(d.accom)}</div>
     <div style="margin-top:5px">
@@ -2398,6 +2401,7 @@ function mergeRosterFromSheets() {
     row.bookings = (row.bookings || 0) + 1;
   });
   absorbRosterPlaceholders();
+  _instrIndex = null;        // roster changed — rebuild the hover lookup lazily
   saveToLocalStorage();
 }
 
@@ -2456,6 +2460,31 @@ function courseCode(course) {
   if (!course) return '';
   const m = String(course).match(/\(?\b([A-Za-z]{2,6}-\d{3,4}[A-Za-z]?(?:-\d{1,3}[A-Za-z]?)?)\b\)?/);
   return m ? m[1].toUpperCase() : '';
+}
+
+// The Accommodate export has an "Additional Instructor" column but Accommodate
+// leaves it empty, so the instructor for a booking is taken from the cover
+// sheets instead: by section code, or by the booking link captured at ZIP load.
+let _instrIndex = null;   // { byCode: {CODE: {...}}, byBooking: {etKey: {...}} }
+
+function buildInstructorIndex() {
+  const byCode = {}, byBooking = {};
+  Object.keys(instructorRoster).forEach(k => {
+    const r = instructorRoster[k];
+    if (!r.name && !r.email) return;
+    const who = { name: r.name || '', email: r.email || '', course: r.course || '' };
+    const code = courseCode(r.course);
+    if (code && !byCode[code]) byCode[code] = who;
+    (rosterLinks[k] || []).forEach(ek => { if (!byBooking[ek]) byBooking[ek] = who; });
+  });
+  _instrIndex = { byCode, byBooking };
+  return _instrIndex;
+}
+
+function instructorFor(rec) {
+  const idx = _instrIndex || buildInstructorIndex();
+  const code = courseCode(rec.course);
+  return (code && idx.byCode[code]) || idx.byBooking[etKey(rec)] || null;
 }
 
 // Which grid bookings a roster row covers. Two routes, because most rows have no
@@ -2672,9 +2701,11 @@ function setRosterField(key, field, val) {
     r[field] = val;
   }
   r.updated = new Date().toISOString();
+  _instrIndex = null;
   saveToLocalStorage();
   renderInstructorPanel();
   renderInstructorSidebar();
+  renderGrid();              // a typed course can newly identify an instructor
 }
 
 function addRosterRow() {
