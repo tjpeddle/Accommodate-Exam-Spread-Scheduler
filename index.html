@@ -276,6 +276,29 @@ table.sched td.office-cell { background: #fafbff; }
 ::-webkit-scrollbar-thumb:hover { background: #6b7494; }
 ::-webkit-scrollbar-thumb:active { background: #2655d4; }
 ::-webkit-scrollbar-corner { background: #e4e8f0; }
+
+/* ---------- printing ---------- */
+#printArea { display: none; }
+@media print {
+  @page { margin: 0.5in; size: portrait; }
+  html, body { background: #fff !important; height: auto !important; overflow: visible !important; }
+  body > header, body > .layout, body > .tooltip { display: none !important; }
+  #printArea { display: block !important; }
+
+  .pr-h1   { font-family: Arial, Helvetica, sans-serif; font-size: 15pt; font-weight: 700; margin: 0 0 2pt; color: #000; }
+  .pr-sub  { font-family: Arial, Helvetica, sans-serif; font-size: 9pt; color: #333; margin: 0 0 10pt; }
+  .pr-tbl  { width: 100%; border-collapse: collapse; font-family: Arial, Helvetica, sans-serif; font-size: 9pt; color: #000; }
+  .pr-tbl thead { display: table-header-group; }   /* repeat headings on every page */
+  .pr-tbl tr   { page-break-inside: avoid; }
+  .pr-tbl th   { text-align: left; border-bottom: 1.2pt solid #000; padding: 4pt 5pt; font-size: 8pt;
+                 text-transform: uppercase; letter-spacing: .3pt; }
+  .pr-tbl td   { border-bottom: .5pt solid #bbb; padding: 4pt 5pt; vertical-align: top; }
+  .pr-tbl tbody tr:nth-child(even) td { background: #f2f2f2; }
+  .pr-name { font-weight: 700; }
+  .pr-em   { font-size: 8pt; color: #333; }
+  .pr-blank{ color: #999; }
+  .pr-foot { margin-top: 10pt; font-family: Arial, Helvetica, sans-serif; font-size: 8pt; color: #444; }
+}
 /* horizontal thumb needs a minimum width, not height */
 ::-webkit-scrollbar-thumb:horizontal { min-width: 44px; min-height: 0; }
 /* Firefox has no ::-webkit rules — this is the most it exposes */
@@ -492,6 +515,8 @@ table.sched td.office-cell { background: #fafbff; }
       <button id="rf_all"  onclick="setRosterFilter('all')"  style="padding:5px 11px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;font-family:var(--mono);font-size:9px;font-weight:700;cursor:pointer;letter-spacing:.4px;text-transform:uppercase">All</button>
       <button id="rf_need" onclick="setRosterFilter('need')" style="padding:5px 11px;border:1px solid var(--border);background:transparent;color:var(--muted);border-radius:6px;font-family:var(--mono);font-size:9px;font-weight:700;cursor:pointer;letter-spacing:.4px;text-transform:uppercase">Still Needed</button>
       <button id="rf_done" onclick="setRosterFilter('done')" style="padding:5px 11px;border:1px solid var(--border);background:transparent;color:var(--muted);border-radius:6px;font-family:var(--mono);font-size:9px;font-weight:700;cursor:pointer;letter-spacing:.4px;text-transform:uppercase">Complete</button>
+      <button onclick="printInstructorList()" title="Print the list as currently filtered"
+        style="padding:5px 12px;border:1px solid var(--accent);background:transparent;color:var(--accent);border-radius:6px;font-family:var(--mono);font-size:9px;font-weight:700;cursor:pointer;letter-spacing:.4px;text-transform:uppercase">🖨 Print</button>
     </div>
 
     <div id="instructorPanelBody" style="flex:1;overflow:auto;padding:0 8px"></div>
@@ -519,6 +544,11 @@ table.sched td.office-cell { background: #fafbff; }
 
 </div>
 <div class="tooltip" id="tooltip"></div>
+
+<!-- Printed output is built here. The panel itself can't be printed directly:
+     it is a fixed-position, scrolling modal full of form controls, which print
+     as empty boxes and clip at the first page. -->
+<div id="printArea"></div>
 
 <script>
 // ══════════════════════════════════════════════════
@@ -2552,6 +2582,66 @@ function applyRosterToSchedule() {
     `Applied ${applied} instructor${applied !== 1 ? 's' : ''} to ${bookings} booking${bookings !== 1 ? 's' : ''}.` +
     (unmatched.length ? ` ${unmatched.length} had no matching booking.` : '')
   );
+}
+
+// Print whatever the panel is currently showing — same filter, same search,
+// same order — rendered as a plain table rather than live form controls.
+function printInstructorList() {
+  const all  = rosterRows();
+  if (!all.length) { showNotif('Nothing to print — the list is empty.'); return; }
+
+  let rows = all;
+  if (rosterFilter === 'need') rows = rows.filter(r => !rosterIsComplete(r));
+  if (rosterFilter === 'done') rows = rows.filter(rosterIsComplete);
+  if (rosterSearch) rows = rows.filter(r =>
+    (r.name || '').toLowerCase().includes(rosterSearch) ||
+    (r.email || '').toLowerCase().includes(rosterSearch) ||
+    (r.course || '').toLowerCase().includes(rosterSearch) ||
+    rosterFormatLabel(r).toLowerCase().includes(rosterSearch));
+
+  if (!rows.length) { showNotif('Nothing to print — no rows match this filter.'); return; }
+
+  rows.sort((a, b) =>
+    lastNameKey(a.name || a.email).localeCompare(lastNameKey(b.name || b.email)) ||
+    (a.course || '').localeCompare(b.course || ''));
+
+  const done  = all.filter(rosterIsComplete).length;
+  const scope = rosterFilter === 'need' ? 'Still needed'
+              : rosterFilter === 'done' ? 'Complete only' : 'All instructors';
+  const when  = new Date().toLocaleString('en-US',
+    { weekday:'short', month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' });
+
+  let html = `<div class="pr-h1">Instructor Responses — OARS Testing Center</div>
+    <div class="pr-sub">${escHtml(scope)}${rosterSearch ? ' · search: "' + escHtml(rosterSearch) + '"' : ''}
+      · showing ${rows.length} of ${all.length} · ${done} complete, ${all.length - done} still needed
+      · printed ${escHtml(when)}</div>
+    <table class="pr-tbl"><thead><tr>
+      <th style="width:19%">Instructor</th><th style="width:23%">Email</th>
+      <th style="width:30%">Course</th><th style="width:14%">Format</th>
+      <th style="width:8%">Minutes</th><th style="width:6%">Done</th>
+    </tr></thead><tbody>`;
+
+  rows.forEach(r => {
+    const fmt = rosterFormatLabel(r);
+    const dash = '<span class="pr-blank">—</span>';
+    html += `<tr>
+      <td class="pr-name">${escHtml(r.name || '') || dash}</td>
+      <td class="pr-em">${escHtml(r.email || '') || dash}</td>
+      <td>${escHtml(r.course || '') || dash}</td>
+      <td>${escHtml(fmt) || dash}</td>
+      <td>${r.length != null && r.length !== '' ? r.length : dash}</td>
+      <td style="text-align:center">${rosterIsComplete(r) ? '&#10003;' : ''}</td>
+    </tr>`;
+  });
+
+  html += `</tbody></table>
+    <div class="pr-foot">Blank course or format means the instructor has not replied yet.</div>`;
+
+  const area = document.getElementById('printArea');
+  area.innerHTML = html;
+  window.print();
+  // leave the DOM as we found it once the dialog closes
+  setTimeout(() => { area.innerHTML = ''; }, 1000);
 }
 
 function deleteRosterRow(key) {
