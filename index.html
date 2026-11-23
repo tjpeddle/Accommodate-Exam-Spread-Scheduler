@@ -216,6 +216,10 @@ table.sched td.office-cell { background: #fafbff; }
 .sb-badge.removed  { background: var(--orange); color: #fff; }
 .sb-badge.online   { background: #1a5fa0; color: #fff; }
 .sb-badge.paper    { background: #555; color: #fff; }
+.sb-badge.isnew    { background: var(--green, #1a7a4a); color: #fff; }
+.sb-badge.ismoved  { background: #7a5ad6; color: #fff; }
+.sb.newbooking     { box-shadow: inset 3px 0 0 0 var(--green, #1a7a4a); }
+.sb.movedbooking   { box-shadow: inset 3px 0 0 0 #7a5ad6; }
 
 
 .pdf-online-link { display:flex;align-items:center;justify-content:space-between;padding:3px 2px;border-bottom:1px solid var(--border2);font-size:11px; }
@@ -387,6 +391,16 @@ table.sched td.office-cell { background: #fafbff; }
     </div>
     <div id="pdfSummary" style="display:none;margin-top:8px;font-size:10px;font-family:var(--mono);line-height:1.6"></div>
     <div id="onlineStudentsList" style="display:none;margin-top:6px;max-height:220px;overflow-y:auto;"></div>
+  </div>
+
+  <div class="sb-sec" id="newBookingsSec" style="display:none;flex-shrink:0">
+    <div class="sb-title" style="display:flex;justify-content:space-between;align-items:center">
+      <span>★ New Bookings</span>
+      <span id="newBookingsCount" style="font-size:10px;color:var(--muted);font-family:var(--mono)"></span>
+    </div>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:6px">Students who appeared for the first time in a recent upload.</div>
+    <div id="newBookingsList" style="max-height:230px;overflow-y:auto;margin-bottom:8px"></div>
+    <button onclick="markAllBookingsSeen()" style="width:100%;padding:6px 10px;background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:6px;font-family:var(--mono);font-size:10px;cursor:pointer">✓ Mark All Seen</button>
   </div>
 
   <div class="sb-sec" id="unclearInstructorsSec" style="display:none">
@@ -600,6 +614,17 @@ let officeRooms   = [...DEFAULT_OFFICES];
 let currentFilter = 'all';
 let currentDate   = null;
 let uploadCount   = { approved: 0, pending: 0 };
+// Every booking ever seen in an upload, student|date|time -> ISO first seen.
+// Keyed on the time as well as the day, because a student can sit two exams on
+// one day and the second one is a real new request that must not be swallowed.
+let seenBookings  = {};
+// student|date -> ISO first seen. Needed to tell a brand-new request from a
+// booking that merely moved to another time, which would otherwise look new.
+let seenStudentDates = {};
+// The subset currently flagged NEW, key -> ISO date it first appeared. Cleared
+// by "Mark all seen", not by the next upload, so a batch dropped in two files
+// (approved + pending) stays visible until it has been reviewed.
+let newBookings   = {};
 let dismissedRemoved = new Set(); // student|date keys dismissed by user
 let examTypes = {};  // key: student|date|slot → 'paper'|'online'
 let notifiedInstructors = {};  // email → { name, firstSeen: ISO date } — persisted in localStorage
@@ -766,6 +791,53 @@ function processRows(rows, fileType) {
     };
   }).filter(Boolean);
 
+  // ---- new-booking detection -------------------------------------------
+  // A booking is NEW when this student+date+time has never been uploaded before.
+  // Comparing across both file types on purpose: a student moving pending ->
+  // approved already put their test in, so that is a status change, not a new
+  // request. A booking whose day was already known but whose time changed, with
+  // the old time now gone, is a reschedule rather than a new request — real
+  // uploads contain both, so they are labelled differently.
+  const firstEverUpload = Object.keys(seenBookings).length === 0;
+  const nowIso = new Date().toISOString();
+
+  // fine keys present in THIS upload, grouped by student|date
+  const curBySD = {};
+  parsed.forEach(r => {
+    const sd = studentDateKey(r);
+    (curBySD[sd] = curBySD[sd] || new Set()).add(bookingKey(r));
+  });
+  // fine keys already known, grouped the same way
+  const priorBySD = {};
+  Object.keys(seenBookings).forEach(k => {
+    const sd = k.slice(0, k.lastIndexOf('|'));
+    (priorBySD[sd] = priorBySD[sd] || []).push(k);
+  });
+
+  let newThisUpload = 0, movedThisUpload = 0;
+  parsed.forEach(r => {
+    const fk = bookingKey(r), sd = studentDateKey(r);
+    if (seenBookings[fk]) return;
+    seenBookings[fk] = nowIso;
+
+    // The very first upload is the baseline — flagging all of it would just be
+    // noise, so only later arrivals are marked.
+    if (firstEverUpload) { seenStudentDates[sd] = nowIso; return; }
+
+    let kind = 'new';
+    if (seenStudentDates[sd]) {
+      // This student already had a booking that day. If one of their earlier
+      // times has disappeared from this upload, the booking moved; if the old
+      // times are all still here, this is an additional exam.
+      const prior = priorBySD[sd] || [];
+      const anyGone = prior.some(k => k !== fk && !(curBySD[sd] && curBySD[sd].has(k)));
+      kind = anyGone ? 'moved' : 'new';
+    }
+    if (!seenStudentDates[sd]) seenStudentDates[sd] = nowIso;
+    newBookings[fk] = { at: nowIso, kind };
+    if (kind === 'moved') movedThisUpload++; else newThisUpload++;
+  });
+
   // Mark removed: was in previous upload of same type, not in new upload
   // Flag ALL prior records of this fileType not present in new upload (not just date-matched)
   const newKeys  = new Set(parsed.map(r => r.student + '|' + r.date));
@@ -784,6 +856,49 @@ function processRows(rows, fileType) {
   detectConflicts();
   saveToLocalStorage();
   refreshUI();
+
+  if (firstEverUpload) {
+    showNotif(`Loaded ${parsed.length} bookings as the baseline — new arrivals will be flagged from the next upload on.`);
+  } else if (newThisUpload || movedThisUpload) {
+    const bits = [];
+    if (newThisUpload)   bits.push(`${newThisUpload} new booking${newThisUpload !== 1 ? 's' : ''}`);
+    if (movedThisUpload) bits.push(`${movedThisUpload} rescheduled`);
+    showNotif(`${bits.join(' and ')} in this upload — see "New Bookings" in the sidebar.`);
+  }
+}
+
+// A single booking: student, day and start time.
+function bookingKey(r) { return r.student + '|' + r.date + '|' + (r.startRaw || r.startMin); }
+// A student's day, regardless of time.
+function studentDateKey(r) { return r.student + '|' + r.date; }
+
+function isNewBooking(r)   { return !!newBookings[bookingKey(r)]; }
+function newBookingKind(r) { const e = newBookings[bookingKey(r)]; return e ? (e.kind || 'new') : ''; }
+function newBookingAt(r)   { const e = newBookings[bookingKey(r)]; return e ? (e.at || '') : ''; }
+
+function newBookingList() {
+  const seen = new Set();
+  return allRecords
+    .filter(r => !r.removed && isNewBooking(r))
+    .filter(r => { const k = bookingKey(r); if (seen.has(k)) return false; seen.add(k); return true; })
+    .sort((a, b) => (newBookingAt(b) || '').localeCompare(newBookingAt(a) || '')
+                 || a.student.localeCompare(b.student));
+}
+
+function markAllBookingsSeen() {
+  const n = Object.keys(newBookings).length;
+  if (!n) { showNotif('No new bookings to clear.'); return; }
+  if (!confirm(`Clear the NEW flag on ${n} booking${n !== 1 ? 's' : ''}?`)) return;
+  newBookings = {};
+  saveToLocalStorage();
+  refreshUI();
+  showNotif('New bookings marked as seen.');
+}
+
+function markOneBookingSeen(key) {
+  delete newBookings[key];
+  saveToLocalStorage();
+  refreshUI();
 }
 
 // ══════════════════════════════════════════════════
@@ -800,7 +915,10 @@ function saveToLocalStorage() {
       examTypes,
       notifiedInstructors,
       instructorRoster,
-      rosterLinks
+      rosterLinks,
+      seenBookings,
+      seenStudentDates,
+      newBookings
     };
     localStorage.setItem(LS_KEY, JSON.stringify(payload));
   } catch(e) { console.warn('localStorage save failed:', e); }
@@ -849,6 +967,63 @@ function renderOnlineStudentsList() {
         <span class="needs-type-date">${d}</span>
       </div>`;
     }).join('');
+}
+
+// Clicking a new booking drops the name into the search box, so the student is
+// both listed and highlighted on the grid rather than only matched silently.
+function findNewBookingStudent(name) {
+  const box = document.getElementById('studentSearch');
+  if (box) box.value = name;
+  searchStudent(name);
+}
+
+function renderNewBookingsSidebar() {
+  const sec = document.getElementById('newBookingsSec');
+  if (!sec) return;
+  const rows = newBookingList();
+  sec.style.display = rows.length ? 'block' : 'none';
+  if (!rows.length) return;
+
+  const nMoved = rows.filter(r => newBookingKind(r) === 'moved').length;
+  const nNew   = rows.length - nMoved;
+  document.getElementById('newBookingsCount').textContent =
+    nNew + ' new' + (nMoved ? ' · ' + nMoved + ' moved' : '');
+
+  // Group by the day they first showed up, newest batch first
+  const groups = [];
+  rows.forEach(r => {
+    const day = (newBookingAt(r) || '').slice(0, 10);
+    let g = groups.find(x => x.day === day);
+    if (!g) { g = { day, items: [] }; groups.push(g); }
+    g.items.push(r);
+  });
+
+  const fmtDay = d => {
+    if (!d) return 'Earlier';
+    const dt = new Date(d + 'T12:00:00');
+    const today = new Date().toISOString().slice(0, 10);
+    if (d === today) return 'Today';
+    return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  let html = '';
+  groups.forEach(g => {
+    html += `<div style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:6px 0 3px">Added ${escH(fmtDay(g.day))} · ${g.items.length}</div>`;
+    g.items.forEach(r => {
+      const k = escJS(bookingKey(r));
+      html += `<div class="sb-item" style="display:flex;align-items:flex-start;gap:5px;padding:4px 5px;border-radius:5px">
+        <div style="flex:1;min-width:0;cursor:pointer" onclick="findNewBookingStudent('${escJS(r.student)}')">
+          <div class="sb-name">${escH(r.student)}${newBookingKind(r) === 'moved' ? ' <span style="font-family:var(--mono);font-size:8px;background:#7a5ad6;color:#fff;padding:1px 4px;border-radius:3px;vertical-align:middle">MOVED</span>' : ''}</div>
+          <div class="sb-course">${escH((r.course || '').split('(')[0].trim())}</div>
+          <div class="sb-accom">${escH(r.date)} · ${escH(r.startRaw || '')} · ${escH(r.status)}</div>
+        </div>
+        <span onclick="event.stopPropagation();markOneBookingSeen('${k}')" title="Mark seen"
+          style="cursor:pointer;color:var(--border);font-size:13px;line-height:1"
+          onmouseover="this.style.color='#1a7a4a'" onmouseout="this.style.color='var(--border)'">✓</span>
+      </div>`;
+    });
+  });
+  document.getElementById('newBookingsList').innerHTML = html;
 }
 
 function renderNeedsTypeSidebar() {
@@ -936,6 +1111,7 @@ function dismissAllRemoved() {
   } catch(e) {}
   updateStats();
   renderGrid();
+  renderNewBookingsSidebar();  // keep the new-bookings list in step
   renderNeedsTypeSidebar();
   renderInstructorSidebar();   // saved responses survive a reload
 }
@@ -947,6 +1123,9 @@ function clearHistory() {
   dismissedRemoved = new Set();
   examTypes = {};
   unclearInstructors = {};
+  seenBookings = {};
+  seenStudentDates = {};
+  newBookings = {};
   instructorRoster = {};
   allInstructorRows = [];
   uploadCount = { approved: 0, pending: 0 };
@@ -966,6 +1145,9 @@ function restoreSessionBaseline() {
   instructorRoster    = saved.instructorRoster    || {};
   rosterLinks         = saved.rosterLinks         || {};
   notifiedInstructors = saved.notifiedInstructors || {};
+  seenBookings        = saved.seenBookings        || {};
+  seenStudentDates    = saved.seenStudentDates    || {};
+  newBookings         = saved.newBookings         || {};
 
   if (!saved.records || !saved.records.length) return;
 
@@ -978,6 +1160,17 @@ function restoreSessionBaseline() {
   if (daysDiff > 14) return;
 
   allRecords = saved.records.map(r => ({ ...r, removed: false, conflict: false, conflictWith: [] }));
+
+  // Upgrading from a version without new-booking tracking: treat everything
+  // already on the schedule as the baseline rather than flagging it all.
+  if (!Object.keys(seenBookings).length && allRecords.length) {
+    const stamp = saved.savedAt || new Date().toISOString();
+    allRecords.forEach(r => {
+      seenBookings[bookingKey(r)] = stamp;
+      seenStudentDates[studentDateKey(r)] = stamp;
+    });
+    saveToLocalStorage();
+  }
   dismissedRemoved = new Set(saved.dismissed || []);
   examTypes = saved.examTypes || {};
 
@@ -989,6 +1182,11 @@ function restoreSessionBaseline() {
     notice.style.display = 'block';
     notice.innerHTML = `↩ Previous session restored (${d} at ${t}) — load today's files to see what changed`;
   }
+
+  // The grid stays empty until today's files are loaded, but the new-booking
+  // flags persist, so show that list straight away — it carries the student,
+  // date and time itself and doesn't need the grid.
+  renderNewBookingsSidebar();
 }
 
 function cleanCourse(c) {
@@ -1055,6 +1253,7 @@ function refreshUI() {
   if (!currentDate || !getDates().includes(currentDate)) currentDate = getDates()[0] || null;
   updateDateTabs();
   renderGrid();
+  renderNewBookingsSidebar();
   renderNeedsTypeSidebar();
   renderOnlineStudentsList();
   renderUnclearInstructorsSidebar();
@@ -1195,9 +1394,21 @@ function closeSummary() {
 }
 
 function buildDateTabs() {
-  document.getElementById('dateTabs').innerHTML = getDates().map(d =>
-    `<button class="date-tab${d===currentDate?' active':''}" onclick="selectDate('${d}')">${fmtDateLabel(d)}</button>`
-  ).join('');
+  // The grid shows one day at a time, so count new bookings per date — otherwise
+  // arrivals on other days are invisible until you happen to click that tab.
+  const newPerDate = {};
+  allRecords.forEach(r => {
+    if (r.removed || !isNewBooking(r)) return;
+    (newPerDate[r.date] = newPerDate[r.date] || new Set()).add(bookingKey(r));
+  });
+
+  document.getElementById('dateTabs').innerHTML = getDates().map(d => {
+    const n = newPerDate[d] ? newPerDate[d].size : 0;
+    const dot = n ? `<span style="display:inline-block;margin-left:5px;background:#1a7a4a;color:#fff;border-radius:8px;
+      padding:0 5px;font-size:9px;font-family:var(--mono);font-weight:700;line-height:14px;vertical-align:middle"
+      title="${n} new booking${n!==1?'s':''} on this day">${n}</span>` : '';
+    return `<button class="date-tab${d===currentDate?' active':''}" onclick="selectDate('${d}')">${fmtDateLabel(d)}${dot}</button>`;
+  }).join('');
 }
 
 function updateDateTabs() {
@@ -1364,10 +1575,16 @@ function renderGrid() {
           const heightPx = Math.max(28, durM * (PX_PER_SLOT / SLOT_MIN) - 3);
           const leftPct  = student.leftPct;
           const widthPct = student.widthPct;
-          const cls = student.removed ? 'removed' : student.conflict ? 'conflict' : student.status;
+          let cls = student.removed ? 'removed' : student.conflict ? 'conflict' : student.status;
+          if (!student.removed && isNewBooking(student)) cls += (newBookingKind(student) === 'moved' ? ' movedbooking' : ' newbooking');
           const courseShort = (student.course||'').split('(')[0].trim().substring(0, 38);
           const badges = [];
           if (student.conflict) badges.push('<span class="sb-badge conflict">⚠ CONFLICT</span>');
+          if (!student.removed && isNewBooking(student)) {
+            const nk = escJS(bookingKey(student));
+            const moved = newBookingKind(student) === 'moved';
+            badges.push(`<span class="sb-badge ${moved ? 'ismoved' : 'isnew'}" style="display:flex;align-items:center;gap:3px">${moved ? '⟳ RESCHEDULED' : '★ NEW'} <span onclick="event.stopPropagation();markOneBookingSeen('${nk}')" style="cursor:pointer;font-weight:900;font-size:11px;margin-left:2px" title="Mark this one seen">✕</span></span>`);
+          }
           if (student.crossDupe) {
             const dk = escJS(student.student + '|' + student.date);
             badges.push(`<span class="sb-badge removed" style="display:flex;align-items:center;gap:3px">↑ NOW APPROVED <span onclick="event.stopPropagation();dismissRemoved('${dk}')" style="cursor:pointer;font-weight:900;font-size:11px;margin-left:2px" title="Dismiss pending">✕</span></span>`);
@@ -1382,7 +1599,10 @@ function renderGrid() {
             dur: student.durMin, slot: student.slot, room: student.room,
             status: student.status, removed: student.removed,
             conflict: student.conflict, conflictWith: student.conflictWith,
-            instructor: instructorFor(student)
+            instructor: instructorFor(student),
+            isNew: !student.removed && isNewBooking(student),
+            newKind: newBookingKind(student),
+            firstSeen: newBookingAt(student)
           });
           const ek = etKey(student);
           const etArr = Array.isArray(examTypes[ek]) ? examTypes[ek] : (examTypes[ek] ? [examTypes[ek]] : []);
@@ -1422,10 +1642,16 @@ function renderGrid() {
           const topPx    = (student.startMin - minT) * (PX_PER_SLOT / SLOT_MIN);
           const durM     = student.durMin || 60;
           const heightPx = Math.max(28, durM * (PX_PER_SLOT / SLOT_MIN) - 3);
-          const cls = student.removed ? 'removed' : student.conflict ? 'conflict' : student.status;
+          let cls = student.removed ? 'removed' : student.conflict ? 'conflict' : student.status;
+          if (!student.removed && isNewBooking(student)) cls += (newBookingKind(student) === 'moved' ? ' movedbooking' : ' newbooking');
           const courseShort = (student.course||'').split('(')[0].trim().substring(0, 38);
           const badges = [];
           if (student.conflict) badges.push('<span class="sb-badge conflict">⚠ CONFLICT</span>');
+          if (!student.removed && isNewBooking(student)) {
+            const nk = escJS(bookingKey(student));
+            const moved = newBookingKind(student) === 'moved';
+            badges.push(`<span class="sb-badge ${moved ? 'ismoved' : 'isnew'}" style="display:flex;align-items:center;gap:3px">${moved ? '⟳ RESCHEDULED' : '★ NEW'} <span onclick="event.stopPropagation();markOneBookingSeen('${nk}')" style="cursor:pointer;font-weight:900;font-size:11px;margin-left:2px" title="Mark this one seen">✕</span></span>`);
+          }
           if (student.crossDupe) {
             const dk2 = escJS(student.student + '|' + student.date);
             badges.push(`<span class="sb-badge removed" style="display:flex;align-items:center;gap:3px">↑ NOW APPROVED <span onclick="event.stopPropagation();dismissRemoved('${dk2}')" style="cursor:pointer;font-weight:900;font-size:11px;margin-left:2px" title="Dismiss pending">✕</span></span>`);
@@ -1440,7 +1666,10 @@ function renderGrid() {
             dur: student.durMin, slot: student.slot, room: student.room,
             status: student.status, removed: student.removed,
             conflict: student.conflict, conflictWith: student.conflictWith,
-            instructor: instructorFor(student)
+            instructor: instructorFor(student),
+            isNew: !student.removed && isNewBooking(student),
+            newKind: newBookingKind(student),
+            firstSeen: newBookingAt(student)
           });
           const ek2 = etKey(student);
           const et2Arr = Array.isArray(examTypes[ek2]) ? examTypes[ek2] : (examTypes[ek2] ? [examTypes[ek2]] : []);
@@ -1683,6 +1912,7 @@ function showTip(e, tipId) {
     <div style="color:#aaa;font-size:11px">${escH(d.room)} · ${escH(d.slot)}</div>
     <div style="margin-top:5px">${escH(d.start)} – ${escH(d.end)} <span style="color:#888">(${fmtDur(d.dur)})</span></div>
     <div style="margin-top:3px;color:#ddd">${escH(d.course)}</div>
+    ${d.isNew ? `<div style="color:${d.newKind === 'moved' ? '#c4b0ff' : '#7fe0a8'};font-size:11px;margin-top:3px;font-weight:600">${d.newKind === 'moved' ? '⟳ RESCHEDULED' : '★ NEW'} — seen ${escH(new Date(d.firstSeen).toLocaleDateString('en-US',{month:'short',day:'numeric'}))}</div>` : ''}
     ${d.instructor ? `<div style="color:#9ec5ff;font-size:11px;margin-top:2px">👤 ${escH(d.instructor.name || d.instructor.email)}${d.instructor.email && d.instructor.name ? ` <span style="color:#7f8ca8">${escH(d.instructor.email)}</span>` : ''}</div>` : ''}
     ${d.exam ? `<div style="color:#aaa;font-size:11px;margin-top:2px">Exam: ${escH(d.exam)}</div>` : ''}
     <div style="color:#bbb;font-style:italic;font-size:10px;margin-top:3px">${escH(d.accom)}</div>
